@@ -17,6 +17,12 @@
   <img src="https://img.shields.io/badge/License-GPLv3-black?style=flat-square" alt="License" />
 </p>
 
+<p align="center">
+  <a href="https://ko-fi.com/tle2721">
+    <img src="https://img.shields.io/badge/☕_Buy_Me_A_Coffee-Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white" alt="Buy Me A Coffee on Ko-fi" />
+  </a>
+</p>
+
 ---
 
 ## ✨ Features
