@@ -1,0 +1,12 @@
+<RCC>
+    <qresource>
+        <file>ui/main.qml</file>
+        <file>ui/LibraryView.qml</file>
+        <file>ui/RecentView.qml</file>
+        <file>ui/BrowseView.qml</file>
+        <file>ui/DownloadsView.qml</file>
+        <file>ui/MangaDetailView.qml</file>
+        <file>ui/ReaderView.qml</file>
+        <file>ui/TouchKeyboard.qml</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,8 @@
+{
+    "id": "rm2manga",
+    "name": "Manga",
+    "loadsBackend": true,
+    "entry": "/ui/main.qml",
+    "supportsScaling": true,
+    "canHaveMultipleFrontends": false
+}
