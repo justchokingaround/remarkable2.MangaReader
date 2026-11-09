@@ -126,10 +126,25 @@ private:
                     m.title = dirName;
                     m.id = dirName;
 
-                    // Check for local cover.jpg
+                    // Check for local cover.jpg / cover.png, or extract first image from chapter
                     fs::path localCover = entry.path() / "cover.jpg";
-                    if (fs::exists(localCover, ec)) {
+                    fs::path localCoverPng = entry.path() / "cover.png";
+                    if (fs::exists(localCoverPng, ec) && fs::file_size(localCoverPng, ec) > 0) {
+                        m.cover_url = localCoverPng.string();
+                    } else if (fs::exists(localCover, ec) && fs::file_size(localCover, ec) > 0) {
                         m.cover_url = localCover.string();
+                    } else {
+                        for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
+                            if (f.path().extension() == ".cbz") {
+                                std::string cmd = "IMG=$(unzip -l \"" + f.path().string() + "\" 2>/dev/null | grep -iE '\\.(jpg|jpeg|png|webp)$' | head -n 1 | awk '{print $NF}'); if [ -n \"$IMG\" ]; then unzip -p \"" + f.path().string() + "\" \"$IMG\" > \"" + localCover.string() + "\" 2>/dev/null; fi";
+                                int ret = std::system(cmd.c_str());
+                                (void)ret;
+                                if (fs::exists(localCover, ec) && fs::file_size(localCover, ec) > 0) {
+                                    m.cover_url = localCover.string();
+                                }
+                                break;
+                            }
+                        }
                     }
 
                     library_mangas_.push_back(m);
@@ -201,8 +216,25 @@ private:
         }
 
         // 2. Keyboard touch if active
-        if (show_keyboard_ && y >= 1100 && y < SCREEN_H - NAV_H) {
-            handleKeyboardTouch(x, y);
+        if (show_keyboard_) {
+            if (y >= 1100 && y < SCREEN_H - NAV_H) {
+                handleKeyboardTouch(x, y);
+                return;
+            }
+            if (y >= 10 && y <= TOP_H && x >= SCREEN_W - 160) {
+                show_keyboard_ = false;
+                if (!search_query_.empty()) {
+                    performSearch(search_query_);
+                } else {
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                }
+                return;
+            }
+            // Tap outside keyboard dismisses it
+            show_keyboard_ = false;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
             return;
         }
 
@@ -296,11 +328,21 @@ private:
     }
 
     void handleBrowseTouch(int x, int y) {
-        // Search bar clicked
-        if (y >= 10 && y <= TOP_H - 10 && x < SCREEN_W - 160) {
-            show_keyboard_ = true;
-            renderAll();
-            display_.refreshUI(0, 1100, SCREEN_W, SCREEN_H - 1100);
+        // Search bar or button clicked
+        if (y >= 10 && y <= TOP_H - 10) {
+            if (x >= SCREEN_W - 160) {
+                if (!search_query_.empty()) {
+                    performSearch(search_query_);
+                } else {
+                    show_keyboard_ = true;
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                }
+            } else {
+                show_keyboard_ = true;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
             return;
         }
 
@@ -375,7 +417,7 @@ private:
 
     void handleDownloadsTouch(int x, int y) {
         int start_y = TOP_H + 20;
-        int item_h = 110;
+        int item_h = 107;
         int idx = 0;
 
         for (const auto& manga : library_mangas_) {
@@ -400,9 +442,9 @@ private:
     }
 
     void handleSettingsTouch(int x, int y) {
-        // Frontlight slider [-] [+] : y: 220..280
-        if (y >= 220 && y <= 280) {
-            if (x >= 200 && x <= 280) { // [-]
+        // Frontlight slider [-] [+] : y: 195..275 (buttons drawn at y = TOP_H + 35 + 60 = 205, h=55)
+        if (y >= 195 && y <= 275) {
+            if (x >= 290 && x <= 380) { // [-] drawn at x=300, w=70
                 int cur = state_.settings().frontlight;
                 cur = std::max(0, cur - 2);
                 state_.settings().frontlight = cur;
@@ -412,7 +454,7 @@ private:
                 display_.refreshFull(WAVEFORM_GC16);
                 return;
             }
-            if (x >= 520 && x <= 600) { // [+]
+            if (x >= 480 && x <= 570) { // [+] drawn at x=490, w=70
                 int cur = state_.settings().frontlight;
                 cur = std::min(24, cur + 2);
                 state_.settings().frontlight = cur;
@@ -424,8 +466,8 @@ private:
             }
         }
 
-        // Reading Mode toggle (RTL / LTR): y: 310..370
-        if (x >= 350 && x <= 550 && y >= 310 && y <= 370) {
+        // Reading Mode toggle (RTL / LTR): y: 275..355 (drawn at y = 205 + 80 = 285, x=300..560)
+        if (x >= 290 && x <= 570 && y >= 275 && y <= 355) {
             if (state_.settings().reading_direction == "RTL") {
                 state_.settings().reading_direction = "LTR";
             } else {
@@ -446,7 +488,9 @@ private:
         // Clear Cache button: x: 100..SCREEN_W-100, y: 550..630
         if (x >= 100 && x <= SCREEN_W - 100 && y >= 550 && y <= 630) {
             page_cache_.clearAll();
-            status_banner_ = "Reader cache cleared successfully!";
+            std::error_code ec;
+            fs::remove_all("/mnt/us/manga/.cache", ec);
+            status_banner_ = "Reader & cover cache cleared successfully!";
             renderSettings();
             display_.refreshFull(WAVEFORM_GC16);
             return;
@@ -455,7 +499,7 @@ private:
         // Refresh Library button: x: 100..SCREEN_W-100, y: 660..740
         if (x >= 100 && x <= SCREEN_W - 100 && y >= 660 && y <= 740) {
             loadLibraryFromDisk();
-            status_banner_ = "Library refreshed!";
+            status_banner_ = "Library refreshed (" + std::to_string(library_mangas_.size()) + " manga)!";
             renderSettings();
             display_.refreshFull(WAVEFORM_GC16);
             return;
@@ -483,9 +527,9 @@ private:
                 return;
             }
 
-            // Middle Hardware Light Slider: y: 800 to 900
-            if (y >= 800 && y <= 900) {
-                if (x >= 200 && x <= 280) { // Light [-]
+            // Middle Hardware Light Slider & Mode: y: 810 to 900
+            if (y >= 810 && y <= 900) {
+                if (x >= SCREEN_W / 2 - 140 && x <= SCREEN_W / 2 - 60) { // Light [-]
                     int cur = state_.settings().frontlight;
                     cur = std::max(0, cur - 2);
                     state_.settings().frontlight = cur;
@@ -494,11 +538,22 @@ private:
                     display_.refreshFull(WAVEFORM_GC16);
                     return;
                 }
-                if (x >= 520 && x <= 600) { // Light [+]
+                if (x >= SCREEN_W / 2 && x <= SCREEN_W / 2 + 80) { // Light [+]
                     int cur = state_.settings().frontlight;
                     cur = std::min(24, cur + 2);
                     state_.settings().frontlight = cur;
                     Frontlight::setIntensity(cur);
+                    renderReader();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+                if (x >= SCREEN_W / 2 + 85 && x <= SCREEN_W / 2 + 240) { // Mode
+                    if (state_.settings().reading_direction == "RTL") {
+                        state_.settings().reading_direction = "LTR";
+                    } else {
+                        state_.settings().reading_direction = "RTL";
+                    }
+                    state_.save();
                     renderReader();
                     display_.refreshFull(WAVEFORM_GC16);
                     return;
@@ -652,6 +707,12 @@ private:
                 zip.close();
                 fs::remove_all(tmpExtract, ec);
 
+                // Also save first page as cover if missing
+                fs::path coverFile = destDir / "cover.jpg";
+                if (!fs::exists(coverFile, ec) && !pageFiles.empty()) {
+                    fs::copy_file(pageFiles[0], coverFile, ec);
+                }
+
                 ch.isDownloaded = true;
                 ch.localPath = cbzFile.string();
                 status_banner_ = "Download complete!";
@@ -666,14 +727,47 @@ private:
         display_.refreshFull(WAVEFORM_GC16);
     }
 
+    void cacheCoversForBrowse() {
+        std::error_code ec;
+        fs::create_directories("/mnt/us/manga/.cache/covers", ec);
+        std::string batchFile = "/tmp/rm2manga_cover_batch.txt";
+        std::ofstream out(batchFile);
+        int count = 0;
+        for (const auto& m : browse_mangas_) {
+            if (count++ >= 8) break;
+            if (m.cover_url.rfind("http://", 0) == 0 || m.cover_url.rfind("https://", 0) == 0) {
+                std::string safeId = m.id;
+                for (char& c : safeId) if (c == '/' || c == ':' || c == ' ' || c == '\\') c = '_';
+                std::string localPath = "/mnt/us/manga/.cache/covers/" + safeId + ".jpg";
+                if (!fs::exists(localPath, ec)) {
+                    out << m.cover_url << "\t" << localPath << "\n";
+                }
+            }
+        }
+        out.close();
+        if (const char* helper = util::httpHelper()) {
+            std::vector<std::string> args = {helper, "batch", batchFile};
+            util::runProcess(args, 15);
+        }
+        ::unlink(batchFile.c_str());
+    }
+
     void fetchPopular() {
         status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
         renderBrowse();
-        display_.refreshUI(0, 0, SCREEN_W, TOP_H + 40);
+        display_.refreshFull(WAVEFORM_GC16);
 
         std::string err;
         browse_mangas_ = sources_.getPopular(&err);
-        status_banner_.clear();
+        if (!err.empty()) {
+            status_banner_ = "Error: " + err;
+        } else {
+            status_banner_.clear();
+            cacheCoversForBrowse();
+        }
+        scroll_offset_ = 0;
+        renderBrowse();
+        display_.refreshFull(WAVEFORM_GC16);
     }
 
     void fetchChapters(const std::string& mangaId) {
@@ -681,52 +775,110 @@ private:
         selected_chapters_ = sources_.getChapters(mangaId, &err);
     }
 
-    void handleKeyboardTouch(int x, int y) {
-        int row_h = 100;
-        int row = (y - 1100) / row_h;
-        if (row < 0 || row > 4) return;
+    static constexpr int KB_Y = 1100;
+    static constexpr int KB_ROW_H = 95;
+    static constexpr int KB_START_Y = KB_Y + 15;
 
-        if (row == 4) {
-            if (x < 300) {
+    void handleKeyboardTouch(int x, int y) {
+        if (y < KB_START_Y) return;
+        int row = (y - KB_START_Y) / KB_ROW_H;
+        if (row < 0 || row > 3) return;
+
+        if (row < 3) {
+            const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
+            std::string rStr = rows[row];
+            int num_keys = static_cast<int>(rStr.length());
+            int key_w = (SCREEN_W - 40) / num_keys;
+            int col = (x - 20) / key_w;
+            if (col >= 0 && col < num_keys) {
+                search_query_ += rStr[col];
+            }
+        } else if (row == 3) {
+            if (x < 200) {
+                // Close button
                 show_keyboard_ = false;
-            } else if (x > SCREEN_W - 300) {
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            } else if (x >= 205 && x < SCREEN_W - 345) {
+                // SPACE
+                search_query_ += " ";
+            } else if (x >= SCREEN_W - 345 && x < SCREEN_W - 180) {
+                // Backspace
+                if (!search_query_.empty()) {
+                    search_query_.pop_back();
+                }
+            } else if (x >= SCREEN_W - 180) {
+                // GO / Submit Search
                 show_keyboard_ = false;
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
+                } else {
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
                 }
-            } else {
-                search_query_ += " ";
+                return;
             }
+        }
+
+        // Fast responsive update of search bar without screen flash or driver lockup
+        renderBrowse();
+        display_.update(0, 0, SCREEN_W, TOP_H + 20, WAVEFORM_GC16, UPDATE_PARTIAL);
+    }
+
+    void performSearch(const std::string& query) {
+        show_keyboard_ = false;
+        status_banner_ = "Searching " + sources_.getActiveSourceId() + " for: " + query;
+        renderBrowse();
+        display_.refreshFull(WAVEFORM_GC16);
+
+        std::string err;
+        browse_mangas_ = sources_.search(query, &err);
+        if (!err.empty()) {
+            status_banner_ = "Search error: " + err;
+        } else if (browse_mangas_.empty()) {
+            status_banner_ = "No results found for \"" + query + "\"";
         } else {
-            const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
-            if (row < 3) {
-                std::string rStr = rows[row];
-                int key_w = SCREEN_W / (static_cast<int>(rStr.length()) + 1);
-                int col = x / key_w;
-                if (col >= 0 && col < static_cast<int>(rStr.length())) {
-                    search_query_ += rStr[col];
-                }
-            } else if (row == 3) {
-                if (!search_query_.empty()) {
-                    search_query_.pop_back();
+            status_banner_.clear();
+            cacheCoversForBrowse();
+        }
+        scroll_offset_ = 0;
+        renderBrowse();
+        display_.refreshFull(WAVEFORM_GC16);
+    }
+
+    void drawCoverThumbnail(int x, int y, int w, int h, const std::string& pathOrUrl, const std::string& fallbackTitle, const std::string& mangaId = "") {
+        std::string localPath = pathOrUrl;
+        std::error_code ec;
+        if (localPath.rfind("http://", 0) == 0 || localPath.rfind("https://", 0) == 0) {
+            std::string safeId = mangaId.empty() ? fallbackTitle : mangaId;
+            for (char& c : safeId) if (c == '/' || c == ':' || c == ' ' || c == '\\') c = '_';
+            std::string cached = "/mnt/us/manga/.cache/covers/" + safeId + ".jpg";
+            if (fs::exists(cached, ec)) {
+                localPath = cached;
+            } else {
+                if (util::httpsDownloadFile(pathOrUrl, cached, 6)) {
+                    localPath = cached;
                 }
             }
         }
 
-        renderAll();
-        display_.refreshUI(0, 0, SCREEN_W, SCREEN_H);
-    }
+        if (!localPath.empty() && fs::exists(localPath, ec)) {
+            int cw = 0, ch = 0, channels = 0;
+            unsigned char* data = stbi_load(localPath.c_str(), &cw, &ch, &channels, 1);
+            if (data) {
+                canvas_.blitImage(x, y, w, h, data, cw, ch);
+                stbi_image_free(data);
+                canvas_.drawRect(x, y, w, h, 0x00, 2);
+                return;
+            }
+        }
 
-    void performSearch(const std::string& query) {
-        status_banner_ = "Searching " + sources_.getActiveSourceId() + " for: " + query;
-        renderBrowse();
-        display_.refreshUI(0, 0, SCREEN_W, TOP_H + 40);
-
-        std::string err;
-        browse_mangas_ = sources_.search(query, &err);
-        status_banner_.clear();
-        renderBrowse();
-        display_.refreshFull(WAVEFORM_GC16);
+        // Fallback: draw neat bordered card with first letter of title
+        canvas_.fillRect(x, y, w, h, 0xE8);
+        canvas_.drawRect(x, y, w, h, 0x00, 2);
+        std::string initial = fallbackTitle.empty() ? "?" : fallbackTitle.substr(0, 1);
+        font_.drawText(canvas_, x + (w - 20) / 2, y + (h - 28) / 2, initial, 30, 0x40, true);
     }
 
     // --- RENDER PASSES WITH EMBER TYPOGRAPHY ---
@@ -773,9 +925,12 @@ private:
             canvas_.drawRect(25, heroY, SCREEN_W - 50, heroH, 0x00, 2);
             canvas_.fillRect(26, heroY + 1, SCREEN_W - 52, heroH - 2, 0xFA);
 
-            // Thumbnail placeholder
-            canvas_.fillRect(40, heroY + 15, 80, 120, 0xD0);
-            canvas_.drawRect(40, heroY + 15, 80, 120, 0x00, 2);
+            // Hero Thumbnail
+            std::string heroCover = "/mnt/us/manga/" + hero.manga_title + "/cover.jpg";
+            if (!fs::exists(heroCover)) {
+                heroCover = "/mnt/us/manga/" + hero.manga_title + "/cover.png";
+            }
+            drawCoverThumbnail(40, heroY + 15, 80, 120, heroCover, hero.manga_title, hero.manga_title);
 
             font_.drawText(canvas_, 140, heroY + 20, "CONTINUE READING", 20, 0x60, true);
             font_.drawText(canvas_, 140, heroY + 50, hero.manga_title, 30, 0x00, true);
@@ -800,8 +955,7 @@ private:
 
         for (const auto& manga : library_mangas_) {
             canvas_.drawRect(25, y, SCREEN_W - 50, item_h, 0x00, 2);
-            canvas_.fillRect(35, y + 10, 80, 110, 0xD0);
-            canvas_.drawRect(35, y + 10, 80, 110, 0x00, 2);
+            drawCoverThumbnail(35, y + 10, 80, 110, manga.cover_url, manga.title);
 
             font_.drawText(canvas_, 135, y + 25, manga.title, 28, 0x00, true);
             font_.drawText(canvas_, 135, y + 75, "Ready to read", 22, 0x70, false);
@@ -817,9 +971,11 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
 
-        std::string searchDisplay = search_query_.empty() ? "Search manga..." : search_query_;
+        std::string searchDisplay = search_query_.empty()
+            ? (show_keyboard_ ? "_" : "Search manga...")
+            : (show_keyboard_ ? search_query_ + "_" : search_query_);
         canvas_.drawRect(20, 15, SCREEN_W - 200, 50, 0x00, 2);
-        font_.drawText(canvas_, 40, 27, searchDisplay, 24, search_query_.empty() ? 0x80 : 0x00, false);
+        font_.drawText(canvas_, 40, 27, searchDisplay, 24, (search_query_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
 
         canvas_.drawButton(SCREEN_W - 160, 15, 140, 50, "Search", true, 2);
 
@@ -843,8 +999,7 @@ private:
 
         for (const auto& manga : browse_mangas_) {
             canvas_.drawRect(25, y, SCREEN_W - 50, item_h, 0x00, 2);
-            canvas_.fillRect(35, y + 10, 80, 110, 0xD0);
-            canvas_.drawRect(35, y + 10, 80, 110, 0x00, 2);
+            drawCoverThumbnail(35, y + 10, 80, 110, manga.cover_url, manga.title, manga.id);
 
             std::string t = manga.title;
             if (t.length() > 32) t = t.substr(0, 30) + "...";
@@ -873,8 +1028,7 @@ private:
             font_.drawText(canvas_, 30, TOP_H + 12, status_banner_, 22, 0x00, true);
         }
 
-        canvas_.fillRect(30, TOP_H + 35, 150, 220, 0xD0);
-        canvas_.drawRect(30, TOP_H + 35, 150, 220, 0x00, 2);
+        drawCoverThumbnail(30, TOP_H + 35, 150, 220, selected_manga_.cover_url, selected_manga_.title, selected_manga_.id);
 
         font_.drawText(canvas_, 210, TOP_H + 45, selected_manga_.title, 30, 0x00, true);
         font_.drawText(canvas_, 210, TOP_H + 95, "Author: " + (selected_manga_.author.empty() ? "MangaDex" : selected_manga_.author), 24, 0x40, false);
@@ -1052,31 +1206,37 @@ private:
     }
 
     void renderKeyboard() {
-        int kb_y = 1100;
-        int kb_h = SCREEN_H - NAV_H - kb_y;
-        canvas_.fillRect(0, kb_y, SCREEN_W, kb_h, 0xF0);
-        canvas_.drawHLine(0, kb_y, SCREEN_W, 0x00, 3);
+        int kb_h = SCREEN_H - NAV_H - KB_Y;
+        canvas_.fillRect(0, KB_Y, SCREEN_W, kb_h, 0xF0);
+        canvas_.drawHLine(0, KB_Y, SCREEN_W, 0x00, 3);
 
         const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
-        int row_h = 95;
 
         for (int r = 0; r < 3; ++r) {
             std::string rStr = rows[r];
             int num_keys = static_cast<int>(rStr.length());
             int key_w = (SCREEN_W - 40) / num_keys;
-            int y = kb_y + 15 + r * row_h;
+            int y = KB_START_Y + r * KB_ROW_H;
 
             for (int k = 0; k < num_keys; ++k) {
                 int x = 20 + k * key_w;
-                canvas_.drawButton(x + 3, y, key_w - 6, row_h - 10, std::string(1, rStr[k]), false, 2);
+                canvas_.drawButton(x + 3, y, key_w - 6, KB_ROW_H - 10, std::string(1, rStr[k]), false, 2);
             }
         }
 
-        int bot_y = kb_y + 15 + 3 * row_h;
-        canvas_.drawButton(20, bot_y, 160, row_h - 10, "Close", false, 2);
-        canvas_.drawButton(190, bot_y, SCREEN_W - 480, row_h - 10, "SPACE", false, 2);
-        canvas_.drawButton(SCREEN_W - 280, bot_y, 120, row_h - 10, "<--", false, 2);
-        canvas_.drawButton(SCREEN_W - 150, bot_y, 130, row_h - 10, "GO", true, 2);
+        int bot_y = KB_START_Y + 3 * KB_ROW_H;
+        int close_w = 170;
+        int go_w = 160;
+        int back_w = 150;
+        canvas_.drawButton(20, bot_y, close_w, KB_ROW_H - 10, "Close", false, 2);
+        int space_x = 20 + close_w + 15;
+        int right_ctrl_w = back_w + 15 + go_w;
+        int space_w = SCREEN_W - 20 - right_ctrl_w - 15 - space_x;
+        canvas_.drawButton(space_x, bot_y, space_w, KB_ROW_H - 10, "SPACE", false, 2);
+        int back_x = space_x + space_w + 15;
+        canvas_.drawButton(back_x, bot_y, back_w, KB_ROW_H - 10, "<--", false, 2);
+        int go_x = back_x + back_w + 15;
+        canvas_.drawButton(go_x, bot_y, go_w, KB_ROW_H - 10, "GO", true, 2);
     }
 
     void renderBottomNav() {
