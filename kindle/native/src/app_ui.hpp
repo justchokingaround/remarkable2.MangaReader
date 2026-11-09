@@ -241,13 +241,6 @@ private:
     }
 
     void handleInput(const InputEvent& ev) {
-        if (ev.type == EventType::TOUCH_DOWN) {
-            touch_down_x_ = ev.x;
-            touch_down_y_ = ev.y;
-            touch_is_down_ = true;
-            return;
-        }
-
         if (ev.type == EventType::KEY_NEXT_PAGE) {
             if (current_view_ == ViewState::SOURCES && sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
                 int totalItems = static_cast<int>(available_aidoku_sources_.size());
@@ -298,50 +291,6 @@ private:
         }
 
         if (ev.type == EventType::TOUCH_UP) {
-            bool wasDown = touch_is_down_;
-            touch_is_down_ = false;
-            int dx = ev.x - touch_down_x_;
-            int dy = ev.y - touch_down_y_;
-
-            // Vertical swipe gesture detection
-            if (wasDown && std::abs(dy) > 100 && std::abs(dy) > std::abs(dx) * 1.5) {
-                if (dy < 0) {
-                    // Swipe up -> page down / next
-                    if (current_view_ == ViewState::BROWSE) {
-                        nextBrowsePage();
-                        return;
-                    } else if (current_view_ == ViewState::DETAIL) {
-                        nextChapterPage();
-                        return;
-                    } else if (current_view_ == ViewState::SOURCES && sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
-                        int totalItems = static_cast<int>(available_aidoku_sources_.size());
-                        int totalPages = (totalItems + AVAILABLE_PER_PAGE - 1) / AVAILABLE_PER_PAGE;
-                        if (available_sources_page_ + 1 < totalPages) {
-                            available_sources_page_++;
-                            renderAll();
-                            display_.refreshFull(WAVEFORM_GC16);
-                        }
-                        return;
-                    }
-                } else {
-                    // Swipe down -> page up / prev
-                    if (current_view_ == ViewState::BROWSE) {
-                        prevBrowsePage();
-                        return;
-                    } else if (current_view_ == ViewState::DETAIL) {
-                        prevChapterPage();
-                        return;
-                    } else if (current_view_ == ViewState::SOURCES && sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
-                        if (available_sources_page_ > 0) {
-                            available_sources_page_--;
-                            renderAll();
-                            display_.refreshFull(WAVEFORM_GC16);
-                        }
-                        return;
-                    }
-                }
-            }
-
             handleTouch(ev.x, ev.y);
         }
     }
@@ -1157,7 +1106,8 @@ private:
             int cy = listStartY + (i - startIdx) * (cardH + 10);
             if (y >= cy && y <= cy + cardH) {
                 const auto& s = available_aidoku_sources_[i];
-                if (!s.is_installed && x >= SCREEN_W - 200) {
+                if (!s.is_installed && x >= SCREEN_W - 240) {
+                    printf("handleAvailableSourcesTouch: Installing source '%s' (%s)\n", s.id.c_str(), s.name.c_str());
                     status_banner_ = "Installing " + s.name + "...";
                     renderSources();
                     display_.refreshFull(WAVEFORM_GC16);
@@ -1166,7 +1116,7 @@ private:
                         status_banner_ = "✓ Successfully installed " + s.name;
                         available_aidoku_sources_[i].is_installed = true;
                     } else {
-                        status_banner_ = "Install error: " + err;
+                        status_banner_ = "Install error: " + (err.empty() ? "Installation failed" : err);
                     }
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
