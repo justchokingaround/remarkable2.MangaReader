@@ -1404,6 +1404,7 @@ private:
     }
 
     void updateDownloadProgress(const std::string& status, int pct) {
+        const bool firstUpdate = !download_active_;
         download_active_ = true;
         download_status_ = status;
         download_progress_pct_ = pct;
@@ -1411,7 +1412,13 @@ private:
             renderReaderDownloadProgress(status, pct);
         } else {
             renderDetail();
-            display_.refreshUI(25, 290, SCREEN_W - 50, 85);
+            if (firstUpdate) {
+                // Clear stale pixels from whatever Kindle screen was visible before
+                // the detail view, before the synchronous network request begins.
+                display_.refreshFull(WAVEFORM_GC16);
+            } else {
+                display_.refreshUI(25, 290, SCREEN_W - 50, 85);
+            }
         }
     }
 
@@ -2179,6 +2186,9 @@ private:
     }
 
     void renderDetail() {
+        // Some callers redraw this view directly (outside renderAll), so it must
+        // initialize every pixel before repainting the detail screen.
+        canvas_.clear(0xFF);
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawButton(canvas_, 20, 15, 140, 50, "< Back", false, 22);

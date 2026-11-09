@@ -320,23 +320,35 @@ inline const char* httpHelper() {
     return (h && *h) ? h : nullptr;
 }
 
-inline bool httpsGetString(const std::string& url, std::string& bodyOut, int timeoutSec = 25) {
+inline bool httpsGetString(const std::string& url, std::string& bodyOut, int timeoutSec = 25,
+                           std::string* errorOut = nullptr) {
+    if (errorOut) errorOut->clear();
     std::string ua = getUserAgentForUrl(url);
     std::string ref = getRefererForUrl(url);
     if (const char* helper = httpHelper()) {
         static int counter = 0;
         std::string tmp = "/tmp/rm2manga_http_" + std::to_string(::getpid()) + "_" +
                           std::to_string(counter++) + ".body";
-        std::vector<std::string> args = {helper, "get", url, tmp};
-        if (!ref.empty()) args.push_back(ref);
+        std::string errFile = tmp + ".err";
+        std::vector<std::string> args = {helper, "get", url, tmp, ref};
+        args.push_back(errFile);
         auto r = runProcess(args, timeoutSec + 20);
         std::ifstream in(tmp, std::ios::binary);
         std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         in.close();
         ::unlink(tmp.c_str());
         if (r.exitCode == 0 && !data.empty()) {
+            ::unlink(errFile.c_str());
             bodyOut = std::move(data);
             return true;
+        }
+        std::string helperError;
+        readFileToString(errFile, helperError);
+        ::unlink(errFile.c_str());
+        if (errorOut) {
+            *errorOut = helperError.empty()
+                ? "HTTPS helper failed (exit " + std::to_string(r.exitCode) + ")"
+                : helperError;
         }
         return false;
     }

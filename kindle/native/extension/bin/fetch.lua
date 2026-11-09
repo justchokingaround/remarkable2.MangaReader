@@ -23,29 +23,48 @@ local function fetch(url, out, referer)
     local ua = url:find("mangadex%.org") and MANGADEX_UA or BROWSER_UA
     local headers = { ["User-Agent"] = ua }
     if referer and referer ~= "" then headers["Referer"] = referer end
-    local ok, code = pcall(function()
-        local _, c = http.request{
+    local ok, code, status = pcall(function()
+        local _, c, headers, statusLine = http.request{
             url = url,
             sink = ltn12.sink.file(f), -- closes f when done
             headers = headers,
             redirect = true,
         }
-        return c
+        return c, statusLine
     end)
     if ok and code == 200 then
         os.remove(out)
         os.rename(part, out)
-        return true
+        return true, nil
     end
     pcall(function() f:close() end)
     os.remove(part)
-    io.stderr:write("fetch failed (" .. tostring(code) .. "): " .. url .. "\n")
-    return false
+    local reason
+    if not ok then
+        reason = "request error: " .. tostring(code)
+    elseif type(code) == "number" then
+        reason = "HTTP " .. tostring(code) .. (status and (" " .. tostring(status)) or "")
+    else
+        reason = "request failed: " .. tostring(code or status or "no response")
+    end
+    io.stderr:write("fetch failed (" .. reason .. "): " .. url .. "\n")
+    return false, reason
+end
+
+local function writeError(path, message)
+    if not path or path == "" then return end
+    local f = io.open(path, "wb")
+    if f then
+        f:write(message or "request failed")
+        f:close()
+    end
 end
 
 local mode = arg[1]
 if mode == "get" then
-    local ok = fetch(arg[2], arg[3], arg[4]) or fetch(arg[2], arg[3], arg[4])
+    local ok, err = fetch(arg[2], arg[3], arg[4])
+    if not ok then ok, err = fetch(arg[2], arg[3], arg[4]) end
+    if not ok then writeError(arg[5], err) end
     os.exit(ok and 0 or 1)
 elseif mode == "batch" then
     local failures = 0

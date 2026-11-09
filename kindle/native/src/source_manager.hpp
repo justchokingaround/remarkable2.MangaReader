@@ -343,15 +343,27 @@ private:
             fullUrl = "https://www.mangahere.cc" + chapterUrl;
         }
 
-        if (!util::httpsGetString(fullUrl, html, 25)) {
-            if (fullUrl.find("mangahere.cc") != std::string::npos) {
-                fullUrl.replace(fullUrl.find("mangahere.cc"), 12, "fanfox.net");
-                util::httpsGetString(fullUrl, html, 25);
+        std::string primaryUrl = fullUrl;
+        std::string primaryError;
+        if (!util::httpsGetString(primaryUrl, html, 25, &primaryError) &&
+            primaryUrl.find("mangahere.cc") != std::string::npos) {
+            std::string fallbackUrl = primaryUrl;
+            fallbackUrl.replace(fallbackUrl.find("mangahere.cc"), 12, "fanfox.net");
+            std::string fallbackError;
+            if (util::httpsGetString(fallbackUrl, html, 25, &fallbackError)) {
+                fullUrl = fallbackUrl;
+            } else if (errOut) {
+                *errOut = "Could not load MangaFox chapter HTML (MangaHere: " +
+                          (primaryError.empty() ? "request failed" : primaryError) +
+                          "; FanFox: " +
+                          (fallbackError.empty() ? "request failed" : fallbackError) + ")";
             }
         }
 
         if (html.empty()) {
-            if (errOut) *errOut = "Could not load MangaFox chapter HTML";
+            if (errOut && errOut->empty()) {
+                *errOut = "Could not load MangaFox chapter HTML (" + primaryUrl + ")";
+            }
             return {};
         }
 
