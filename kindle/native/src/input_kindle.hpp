@@ -33,6 +33,7 @@ class InputKindle {
 private:
     int touch_fd_ = -1;
     int button_fd_ = -1;
+    int rotation_ = 0; // 0 (standard, buttons right) or 180 (buttons left)
     std::atomic<bool> running_{false};
     std::thread thread_;
     std::mutex queue_mutex_;
@@ -41,6 +42,9 @@ private:
 public:
     InputKindle() = default;
     ~InputKindle() { stop(); }
+
+    void setRotation(int deg) { rotation_ = deg; }
+    int rotation() const { return rotation_; }
 
     bool start(const char* touch_dev = "/dev/input/event9", const char* button_dev = "/dev/input/event4") {
         touch_fd_ = open(touch_dev, O_RDONLY | O_NONBLOCK);
@@ -161,7 +165,10 @@ private:
                                 is_down = true;
                             } else if (ev[i].value < 0 && is_down) {
                                 is_down = false;
-                                pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
+                                int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
+                                int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
+                                printf("InputKindle: TOUCH_UP raw=(%d, %d) mapped=(%d, %d)\n", cur_x, cur_y, mx, my);
+                                pushEvent({EventType::TOUCH_UP, mx, my});
                             }
                         }
                     } else if (ev[i].type == EV_KEY && ev[i].code == BTN_TOUCH) {
@@ -169,7 +176,10 @@ private:
                             is_down = true;
                         } else if (ev[i].value == 0 && is_down) {
                             is_down = false;
-                            pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
+                            int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
+                            int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
+                            printf("InputKindle: TOUCH_UP raw=(%d, %d) mapped=(%d, %d)\n", cur_x, cur_y, mx, my);
+                            pushEvent({EventType::TOUCH_UP, mx, my});
                         }
                     }
                 }

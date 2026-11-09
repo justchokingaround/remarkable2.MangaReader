@@ -26,6 +26,7 @@ struct AppSettings {
     bool trim_margins = true;
     bool button_inverted = false;
     int refresh_interval = 8;
+    int touch_rotation = 0; // 0 (buttons right) or 180 (buttons left)
 };
 
 class StateManager {
@@ -61,6 +62,7 @@ public:
             settings_.trim_margins = s["trim_margins"].boolean(true);
             settings_.button_inverted = s["button_inverted"].boolean(false);
             settings_.refresh_interval = static_cast<int>(s["refresh_interval"].integer(8));
+            settings_.touch_rotation = static_cast<int>(s["touch_rotation"].integer(0));
         }
 
         if (root.has("history") && root["history"].isObject()) {
@@ -86,6 +88,7 @@ public:
         s["trim_margins"] = settings_.trim_margins;
         s["button_inverted"] = settings_.button_inverted;
         s["refresh_interval"] = static_cast<double>(settings_.refresh_interval);
+        s["touch_rotation"] = static_cast<double>(settings_.touch_rotation);
         root["settings"] = s;
 
         Json::Value h = Json::Value::object();

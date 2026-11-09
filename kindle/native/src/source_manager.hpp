@@ -86,6 +86,16 @@ public:
 
     mangadex::Client& mangadexClient() { return mangadex_client_; }
 
+    std::vector<std::string> getChapterPageUrls(const UnifiedChapter& ch, std::string* errOut = nullptr) {
+        if (ch.source_id == "mangafox") {
+            return fetchMangaFoxPageUrls(ch.url.empty() ? ch.id : ch.url, errOut);
+        }
+        if (ch.source_id == "mangakatana") {
+            return fetchMangaKatanaPageUrls(ch.url.empty() ? ch.id : ch.url, errOut);
+        }
+        return {};
+    }
+
 private:
     std::vector<UnifiedManga> fetchMangaDexPopular(std::string* errOut) {
         std::vector<UnifiedManga> results;
@@ -286,6 +296,144 @@ private:
             list.push_back(ch);
         }
         return list;
+    }
+
+    static std::string unpackDeanEdwards(const std::string& script) {
+        size_t start = script.find("}('");
+        if (start == std::string::npos) return "";
+        start += 3;
+        size_t endTemplate = script.find("',", start);
+        if (endTemplate == std::string::npos) return "";
+        std::string templateStr = script.substr(start, endTemplate - start);
+
+        size_t startWords = script.find(",'", endTemplate);
+        if (startWords == std::string::npos) return "";
+        startWords += 2;
+        size_t endWords = script.find("'.split('|')", startWords);
+        if (endWords == std::string::npos) return "";
+        std::string wordsStr = script.substr(startWords, endWords - startWords);
+
+        std::vector<std::string> dict;
+        std::stringstream ss(wordsStr);
+        std::string item;
+        while (std::getline(ss, item, '|')) {
+            dict.push_back(item);
+        }
+
+        auto decodeBase62 = [](const std::string& token) -> int {
+            int val = 0;
+            for (char c : token) {
+                val *= 62;
+                if (c >= '0' && c <= '9') val += (c - '0');
+                else if (c >= 'a' && c <= 'z') val += (c - 'a' + 10);
+                else if (c >= 'A' && c <= 'Z') val += (c - 'A' + 36);
+                else return -1;
+            }
+            return val;
+        };
+
+        std::string result;
+        result.reserve(templateStr.size() * 2);
+        size_t i = 0;
+        while (i < templateStr.size()) {
+            if (std::isalnum(static_cast<unsigned char>(templateStr[i]))) {
+                size_t tokenStart = i;
+                while (i < templateStr.size() && std::isalnum(static_cast<unsigned char>(templateStr[i]))) {
+                    i++;
+                }
+                std::string token = templateStr.substr(tokenStart, i - tokenStart);
+                int idx = decodeBase62(token);
+                if (idx >= 0 && idx < static_cast<int>(dict.size()) && !dict[idx].empty()) {
+                    result += dict[idx];
+                } else {
+                    result += token;
+                }
+            } else {
+                result += templateStr[i++];
+            }
+        }
+        return result;
+    }
+
+    std::vector<std::string> fetchMangaFoxPageUrls(const std::string& chapterUrl, std::string* errOut) {
+        std::string html;
+        std::string fullUrl = chapterUrl;
+        if (fullUrl.rfind("http", 0) != 0) {
+            fullUrl = "https://www.mangahere.cc" + chapterUrl;
+        }
+
+        if (!util::httpsGetString(fullUrl, html, 25)) {
+            if (fullUrl.find("mangahere.cc") != std::string::npos) {
+                fullUrl.replace(fullUrl.find("mangahere.cc"), 12, "fanfox.net");
+                util::httpsGetString(fullUrl, html, 25);
+            }
+        }
+
+        if (html.empty()) {
+            if (errOut) *errOut = "Could not load MangaFox chapter HTML";
+            return {};
+        }
+
+        size_t evalPos = html.find("eval(function(p,a,c,k,e,d)");
+        if (evalPos == std::string::npos) {
+            evalPos = html.find("eval(function(p,a,c,k,e,r)");
+        }
+        if (evalPos == std::string::npos) {
+            if (errOut) *errOut = "MangaFox chapter script not found";
+            return {};
+        }
+
+        size_t evalEnd = html.find("</script>", evalPos);
+        std::string script = html.substr(evalPos, (evalEnd != std::string::npos) ? (evalEnd - evalPos) : 2000);
+        std::string unpacked = unpackDeanEdwards(script);
+
+        std::vector<std::string> pages;
+        std::regex urlRegex(R"raw((?:https?:)?//[^\s'",;]+\.(?:jpg|jpeg|png|webp))raw");
+        auto begin = std::sregex_iterator(unpacked.begin(), unpacked.end(), urlRegex);
+        auto end = std::sregex_iterator();
+        for (auto it = begin; it != end; ++it) {
+            std::string u = it->str();
+            if (u.rfind("//", 0) == 0) u = "https:" + u;
+            if (pages.empty() || pages.back() != u) {
+                pages.push_back(u);
+            }
+        }
+
+        if (pages.empty() && errOut) {
+            *errOut = "Failed to parse MangaFox page URLs";
+        }
+        return pages;
+    }
+
+    std::vector<std::string> fetchMangaKatanaPageUrls(const std::string& chapterUrl, std::string* errOut) {
+        std::string html;
+        std::string fullUrl = chapterUrl;
+        if (fullUrl.rfind("http", 0) != 0) {
+            fullUrl = "https://mangakatana.com" + chapterUrl;
+        }
+
+        if (!util::httpsGetString(fullUrl, html, 25)) {
+            if (errOut) *errOut = "Could not load MangaKatana chapter HTML";
+            return {};
+        }
+
+        std::vector<std::string> pages;
+        size_t thzPos = html.find("var thzq=[");
+        if (thzPos != std::string::npos) {
+            size_t thzEnd = html.find("];", thzPos);
+            std::string slice = html.substr(thzPos, (thzEnd != std::string::npos) ? (thzEnd - thzPos + 2) : 2000);
+            std::regex urlRegex(R"raw(https?://[^\s'",;]+\.(?:jpg|jpeg|png|webp))raw");
+            auto begin = std::sregex_iterator(slice.begin(), slice.end(), urlRegex);
+            auto end = std::sregex_iterator();
+            for (auto it = begin; it != end; ++it) {
+                pages.push_back(it->str());
+            }
+        }
+
+        if (pages.empty() && errOut) {
+            *errOut = "Failed to parse MangaKatana page URLs";
+        }
+        return pages;
     }
 };
 

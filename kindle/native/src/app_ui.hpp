@@ -92,6 +92,7 @@ public:
 
         font_.init();
         state_.load();
+        input_.setRotation(state_.settings().touch_rotation);
 
         loadLibraryFromDisk();
         renderAll();
@@ -562,14 +563,26 @@ private:
             return;
         }
 
-        // Exit to Kindle Home button: x: 100..SCREEN_W-100, y: 440..520
-        if (x >= 100 && x <= SCREEN_W - 100 && y >= 440 && y <= 520) {
+        // Grip / Touch Orientation toggle: y: 355..435
+        if (x >= 290 && x <= 630 && y >= 355 && y <= 435) {
+            int newRot = (state_.settings().touch_rotation == 180 ? 0 : 180);
+            state_.settings().touch_rotation = newRot;
+            input_.setRotation(newRot);
+            state_.save();
+            status_banner_ = "Touch orientation: " + std::string(newRot == 180 ? "Buttons Left (180°)" : "Buttons Right (0°)");
+            renderSettings();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        // Exit to Kindle Home button: x: 100..SCREEN_W-100, y: 470..550
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 470 && y <= 550) {
             quit();
             return;
         }
 
-        // Clear Cache button: x: 100..SCREEN_W-100, y: 550..630
-        if (x >= 100 && x <= SCREEN_W - 100 && y >= 550 && y <= 630) {
+        // Clear Cache button: x: 100..SCREEN_W-100, y: 565..645
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 565 && y <= 645) {
             page_cache_.clearAll();
             std::error_code ec;
             fs::remove_all("/mnt/us/manga/.cache", ec);
@@ -790,16 +803,57 @@ private:
         display_.refreshUI(0, 0, SCREEN_W, TOP_H);
 
         fs::path destDir = "/mnt/us/manga/" + selected_manga_.title;
-        fs::path tmpExtract = "/tmp/rm2manga_dl_" + ch.id;
+        std::string safeId = ch.id.empty() ? ch.title : ch.id;
+        for (char& c : safeId) if (c == '/' || c == ':' || c == ' ') c = '_';
+        fs::path tmpExtract = "/tmp/rm2manga_dl_" + safeId;
+
+        std::error_code ec;
+        fs::create_directories(tmpExtract, ec);
+
         std::atomic<bool> cancel{false};
         std::string err;
+        bool ok = false;
 
-        bool ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
-            [this](const std::string& msg, int pct) {
-                status_banner_ = msg + " (" + std::to_string(pct) + "%)";
+        if (ch.source_id == "mangafox" || ch.source_id == "mangakatana") {
+            status_banner_ = "Fetching page list from " + ch.source_id + "...";
+            renderDetail();
+            display_.refreshUI(0, 0, SCREEN_W, TOP_H);
+
+            std::vector<std::string> pageUrls = sources_.getChapterPageUrls(ch, &err);
+            if (pageUrls.empty()) {
+                status_banner_ = "Failed fetching pages: " + err;
+                renderDetail();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+
+            int total = static_cast<int>(pageUrls.size());
+            int downloaded = 0;
+            for (int p = 0; p < total; ++p) {
+                if (cancel.load()) break;
+                char fname[32];
+                snprintf(fname, sizeof(fname), "page_%03d.jpg", p + 1);
+                fs::path pageFile = tmpExtract / fname;
+
+                status_banner_ = "Downloading " + std::to_string(p + 1) + "/" + std::to_string(total) + "...";
                 renderDetail();
                 display_.refreshUI(0, 0, SCREEN_W, TOP_H);
-            }, &err);
+
+                if (util::httpsDownloadFile(pageUrls[p], pageFile.string(), 25)) {
+                    downloaded++;
+                }
+            }
+            ok = (downloaded > 0);
+            if (!ok && err.empty()) err = "Failed downloading pages";
+        } else {
+            // MangaDex
+            ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
+                [this](const std::string& msg, int pct) {
+                    status_banner_ = msg + " (" + std::to_string(pct) + "%)";
+                    renderDetail();
+                    display_.refreshUI(0, 0, SCREEN_W, TOP_H);
+                }, &err);
+        }
 
         if (ok) {
             status_banner_ = "Packing CBZ archive...";
@@ -1434,17 +1488,23 @@ private:
         std::string modeLabel = (state_.settings().reading_direction == "RTL") ? "Manga (RTL <-)" : "Comic (LTR ->)";
         font_.drawButton(canvas_, 300, y, 260, 55, modeLabel, true, 22);
 
-        y = 440;
-        // Big Exit Button
-        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Exit rm2manga to Kindle Home", true, 24);
+        // Grip / Touch Orientation Control
+        y += 80;
+        font_.drawText(canvas_, 40, y + 10, "Grip / Touch:", 26, 0x00, true);
+        std::string rotLabel = (state_.settings().touch_rotation == 180) ? "Buttons Left (180°)" : "Buttons Right (0°)";
+        font_.drawButton(canvas_, 300, y, 320, 55, rotLabel, true, 22);
 
-        y = 550;
+        y = 470;
+        // Big Exit Button
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 75, "Exit rm2manga to Kindle Home", true, 24);
+
+        y = 565;
         // Clear Cache Button
-        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Clear Reader Image Cache", false, 24);
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 75, "Clear Reader Image Cache", false, 24);
 
         y = 660;
         // Refresh Library Button
-        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Rescan Manga Storage", false, 24);
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 75, "Rescan Manga Storage", false, 24);
     }
 
     void renderReader() {
