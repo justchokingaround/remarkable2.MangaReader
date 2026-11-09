@@ -16,6 +16,9 @@
 #include <filesystem>
 #include <algorithm>
 #include <atomic>
+#include <thread>
+#include <mutex>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -85,8 +88,24 @@ private:
     // Scroll state
     int scroll_offset_ = 0;
 
+    // Background Next Chapter Preloader (auto-downloads within 5 pages of chapter end)
+    std::atomic<bool> preload_in_progress_{false};
+    std::string preloading_chapter_id_;
+    std::atomic<int> preload_pct_{0};
+    std::string preload_status_;
+    std::thread preload_thread_;
+    std::mutex chapters_mu_;
+    std::atomic<bool> shutting_down_{false};
+
 public:
     AppUI() = default;
+
+    ~AppUI() {
+        shutting_down_ = true;
+        if (preload_thread_.joinable()) {
+            preload_thread_.join();
+        }
+    }
 
     bool init() {
         if (!std::getenv("RM2MANGA_HTTP_HELPER")) {
@@ -120,6 +139,10 @@ public:
     }
 
     void quit() {
+        shutting_down_ = true;
+        if (preload_thread_.joinable()) {
+            preload_thread_.join();
+        }
         state_.save();
         is_running_ = false;
     }
@@ -333,14 +356,9 @@ private:
             if (y >= item_y && y < item_y + item_h) {
                 selected_manga_ = library_mangas_[i];
                 if (!selected_manga_.source_id.empty() && selected_manga_.source_id != "local") {
-                    status_banner_ = "Loading chapters for " + selected_manga_.title + "...";
-                    renderLibrary();
-                    display_.refreshUI(0, 0, SCREEN_W, TOP_H + 80);
                     sources_.setActiveSourceId(selected_manga_.source_id);
-                    fetchChapters(selected_manga_.id);
-                } else {
-                    loadLocalChapters(selected_manga_.title);
                 }
+                loadMangaChapters(selected_manga_);
                 current_view_ = ViewState::DETAIL;
                 scroll_offset_ = 0;
                 status_banner_.clear();
@@ -354,7 +372,13 @@ private:
     void resumeHero(const MangaProgress& hero) {
         selected_manga_.title = hero.manga_title;
         selected_manga_.id = hero.manga_title;
-        loadLocalChapters(hero.manga_title);
+        for (const auto& libM : library_mangas_) {
+            if (libM.title == hero.manga_title) {
+                selected_manga_ = libM;
+                break;
+            }
+        }
+        loadMangaChapters(selected_manga_);
 
         for (size_t i = 0; i < selected_chapters_.size(); ++i) {
             if (selected_chapters_[i].title == hero.chapter_title ||
@@ -371,24 +395,49 @@ private:
         }
     }
 
-    void loadLocalChapters(const std::string& mangaTitle) {
+    void loadMangaChapters(const UnifiedManga& manga) {
         selected_chapters_.clear();
         chapter_page_ = 0;
-        std::string dirPath = "/mnt/us/manga/" + mangaTitle;
+
+        // 1. Try to load cached full chapter catalog
+        selected_chapters_ = state_.getCachedChapters(manga.title, manga.source_id, manga.id);
+
+        // 2. Scan local storage for downloaded .cbz files
+        std::string dirPath = "/mnt/us/manga/" + manga.title;
         std::error_code ec;
 
         if (fs::exists(dirPath, ec)) {
             for (const auto& f : fs::directory_iterator(dirPath, ec)) {
                 if (f.path().extension() == ".cbz") {
-                    UnifiedChapter ch;
-                    ch.title = f.path().stem().string();
-                    ch.chapterNum = ch.title;
-                    ch.localPath = f.path().string();
-                    ch.isDownloaded = true;
-                    selected_chapters_.push_back(ch);
+                    std::string stem = f.path().stem().string();
+                    bool matched = false;
+                    for (auto& ch : selected_chapters_) {
+                        std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+                        if (ch.title == stem || ch.chapterNum == stem || safeCh == stem) {
+                            ch.isDownloaded = true;
+                            ch.localPath = f.path().string();
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) {
+                        UnifiedChapter localCh;
+                        localCh.title = stem;
+                        localCh.chapterNum = stem;
+                        localCh.localPath = f.path().string();
+                        localCh.isDownloaded = true;
+                        selected_chapters_.push_back(localCh);
+                    }
                 }
             }
         }
+
+        // 3. If cache was empty and no local files, but source is known, fetch chapters
+        if (selected_chapters_.empty() && !manga.id.empty() && !manga.source_id.empty() && manga.source_id != "local") {
+            fetchChapters(manga.id);
+            return;
+        }
+
         sortChapters();
     }
 
@@ -562,7 +611,7 @@ private:
                         int item_y = start_y + idx * row_stride - scroll_offset_;
                         if (y >= item_y && y < item_y + item_h) {
                             selected_manga_ = manga;
-                            loadLocalChapters(manga.title);
+                            loadMangaChapters(selected_manga_);
                             for (size_t c = 0; c < selected_chapters_.size(); ++c) {
                                 if (selected_chapters_[c].localPath == f.path().string() ||
                                     selected_chapters_[c].title == f.path().stem().string()) {
@@ -913,6 +962,180 @@ private:
         }
     }
 
+    void triggerBackgroundPreload() {
+        if (preload_in_progress_.load() || shutting_down_.load()) return;
+
+        int nextIdx = getNextChapterIndex();
+        if (nextIdx < 0 || nextIdx >= static_cast<int>(selected_chapters_.size())) return;
+
+        std::string safeManga = selected_manga_.title;
+        std::string safeCh;
+        std::string nextCid;
+        {
+            std::lock_guard<std::mutex> lock(chapters_mu_);
+            const auto& nextCh = selected_chapters_[nextIdx];
+            safeCh = nextCh.chapterNum.empty() ? "chapter" : ("chapter_" + nextCh.chapterNum);
+            nextCid = nextCh.id.empty() ? nextCh.title : nextCh.id;
+        }
+
+        fs::path destDir = "/mnt/us/manga/" + safeManga;
+        fs::path cbzFile = destDir / (safeCh + ".cbz");
+        std::error_code ec;
+
+        if (fs::exists(cbzFile, ec)) {
+            // Already downloaded on disk! Ensure in-memory status is marked
+            std::lock_guard<std::mutex> lock(chapters_mu_);
+            selected_chapters_[nextIdx].isDownloaded = true;
+            selected_chapters_[nextIdx].localPath = cbzFile.string();
+            return;
+        }
+
+        // Start background preloading
+        preload_in_progress_ = true;
+        preloading_chapter_id_ = nextCid;
+        preload_pct_ = 5;
+
+        if (preload_thread_.joinable()) {
+            preload_thread_.join();
+        }
+
+        preload_thread_ = std::thread([this, nextIdx]() {
+            downloadChapterInBackground(nextIdx);
+            preload_in_progress_ = false;
+        });
+    }
+
+    void downloadChapterInBackground(int chIdx) {
+        UnifiedChapter ch;
+        std::string mangaTitle;
+        {
+            std::lock_guard<std::mutex> lock(chapters_mu_);
+            if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
+            ch = selected_chapters_[chIdx];
+            mangaTitle = selected_manga_.title;
+        }
+
+        if (ch.isDownloaded) return;
+
+        fs::path destDir = "/mnt/us/manga/" + mangaTitle;
+        std::string safeId = ch.id.empty() ? ch.title : ch.id;
+        for (char& c : safeId) if (c == '/' || c == ':' || c == ' ') c = '_';
+        fs::path tmpExtract = "/tmp/rm2manga_dl_" + safeId;
+
+        std::error_code ec;
+        fs::create_directories(tmpExtract, ec);
+
+        std::atomic<bool> cancel{false};
+        std::string err;
+        bool ok = false;
+
+        preload_pct_ = 10;
+
+        if (ch.source_id == "mangafox" || ch.source_id == "mangakatana") {
+            std::vector<std::string> pageUrls = sources_.getChapterPageUrls(ch, &err);
+            if (pageUrls.empty() || shutting_down_.load()) {
+                fs::remove_all(tmpExtract, ec);
+                return;
+            }
+
+            int total = static_cast<int>(pageUrls.size());
+            int downloaded = 0;
+            for (int p = 0; p < total; ++p) {
+                if (shutting_down_.load()) break;
+                char fname[32];
+                snprintf(fname, sizeof(fname), "page_%03d.jpg", p + 1);
+                fs::path pageFile = tmpExtract / fname;
+
+                int pct = 10 + ((p + 1) * 75) / total;
+                preload_pct_ = pct;
+
+                if (util::httpsDownloadFile(pageUrls[p], pageFile.string(), 30)) {
+                    downloaded++;
+                }
+            }
+            ok = (downloaded > 0);
+        } else {
+            // MangaDex
+            ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
+                [this](const std::string& msg, int pct) {
+                    preload_pct_ = pct;
+                }, &err);
+        }
+
+        if (ok && !shutting_down_.load()) {
+            preload_pct_ = 90;
+            fs::create_directories(destDir, ec);
+            std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+            fs::path cbzFile = destDir / (safeCh + ".cbz");
+
+            ZipStoreWriter zip;
+            if (zip.open(cbzFile.string())) {
+                std::vector<fs::path> pageFiles;
+                for (const auto& entry : fs::directory_iterator(tmpExtract, ec)) {
+                    if (entry.is_regular_file(ec)) {
+                        pageFiles.push_back(entry.path());
+                    }
+                }
+                std::sort(pageFiles.begin(), pageFiles.end(), [](const fs::path& a, const fs::path& b) {
+                    return util::naturalLess(a.filename().string(), b.filename().string());
+                });
+
+                for (const auto& pf : pageFiles) {
+                    std::string bytes;
+                    if (util::readFileToString(pf, bytes)) {
+                        std::vector<uint8_t> vec(bytes.begin(), bytes.end());
+                        zip.add(pf.filename().string(), vec);
+                    }
+                }
+                zip.close();
+                fs::remove_all(tmpExtract, ec);
+
+                // Save first page as cover if missing
+                fs::path coverFile = destDir / "cover.jpg";
+                if (!fs::exists(coverFile, ec) && !pageFiles.empty()) {
+                    fs::copy_file(pageFiles[0], coverFile, ec);
+                }
+
+                // Update in-memory chapter state
+                ch.isDownloaded = true;
+                ch.localPath = cbzFile.string();
+                {
+                    std::lock_guard<std::mutex> lock(chapters_mu_);
+                    if (chIdx < static_cast<int>(selected_chapters_.size())) {
+                        selected_chapters_[chIdx] = ch;
+                    }
+                }
+
+                // Pre-extract into page cache so it's instantly decoded
+                std::set<std::string> pinned;
+                page_cache_.extractCbz(ch.id.empty() ? ch.title : ch.id, cbzFile, pinned, &err);
+                preload_pct_ = 100;
+            }
+        }
+        fs::remove_all(tmpExtract, ec);
+    }
+
+    void transitionToNextChapter(int nextIdx) {
+        if (nextIdx < 0 || nextIdx >= static_cast<int>(selected_chapters_.size())) return;
+
+        // If background preloader is currently fetching this chapter, display progress and await completion
+        if (preload_in_progress_.load()) {
+            std::string chNum = selected_chapters_[nextIdx].chapterNum;
+            renderReaderDownloadProgress("Downloading next chapter (Ch. " + chNum + ")...", preload_pct_.load());
+
+            while (preload_in_progress_.load() && !shutting_down_.load()) {
+                renderReaderDownloadProgress("Downloading next chapter (Ch. " + chNum + ")...", preload_pct_.load());
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            }
+
+            if (preload_thread_.joinable()) {
+                preload_thread_.join();
+            }
+        }
+
+        openChapter(nextIdx);
+    }
+
     void nextPage() {
         if (reader_current_page_ + 1 < reader_total_pages_) {
             reader_current_page_++;
@@ -924,11 +1147,16 @@ private:
             } else {
                 display_.refreshPage();
             }
+
+            // Background pre-fetch next chapter when within 5 pages of chapter end
+            if (reader_total_pages_ > 0 && reader_current_page_ >= reader_total_pages_ - 5) {
+                triggerBackgroundPreload();
+            }
         } else {
-            // Reached the end of the chapter: advance to next chapter
+            // Reached the end of the chapter: transition to next chapter
             int nextIdx = getNextChapterIndex();
             if (nextIdx >= 0) {
-                openChapter(nextIdx);
+                transitionToNextChapter(nextIdx);
             } else {
                 renderReaderToast("End of manga reached");
             }
@@ -990,6 +1218,11 @@ private:
             recordProgress();
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
+
+            // If chapter has 5 or fewer pages total, start preloading next chapter right away
+            if (reader_total_pages_ <= 5) {
+                triggerBackgroundPreload();
+            }
         } else {
             downloadChapter(chIdx, autoOpenAfterDownload);
         }

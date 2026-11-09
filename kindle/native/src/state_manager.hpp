@@ -30,6 +30,7 @@ private:
     std::string active_manga_;
     std::map<std::string, MangaProgress> progress_map_;
     std::map<std::string, UnifiedManga> library_map_;
+    std::map<std::string, std::vector<UnifiedChapter>> chapters_cache_map_;
 
     static std::string makeKey(const std::string& sourceId, const std::string& mangaId, const std::string& title) {
         if (!sourceId.empty() && !mangaId.empty()) {
@@ -96,6 +97,26 @@ public:
                 library_map_[k] = m;
             }
         }
+
+        if (root.has("chapters_cache") && root["chapters_cache"].isObject()) {
+            chapters_cache_map_.clear();
+            for (const auto& kv : root["chapters_cache"].asObject()) {
+                if (kv.second.isArray()) {
+                    std::vector<UnifiedChapter> list;
+                    for (const auto& item : kv.second.asArray()) {
+                        UnifiedChapter ch;
+                        ch.id = item["id"].str();
+                        ch.chapterNum = item["chapterNum"].str();
+                        ch.title = item["title"].str();
+                        ch.scanlator = item["scanlator"].str();
+                        ch.url = item["url"].str();
+                        ch.source_id = item["source_id"].str();
+                        list.push_back(ch);
+                    }
+                    chapters_cache_map_[kv.first] = list;
+                }
+            }
+        }
     }
 
     void save() {
@@ -136,8 +157,50 @@ public:
         }
         root["library"] = libArr;
 
+        Json::Value cacheObj = Json::Value::object();
+        for (const auto& kv : chapters_cache_map_) {
+            Json::Value arr = Json::Value::array();
+            for (const auto& ch : kv.second) {
+                Json::Value item = Json::Value::object();
+                item["id"] = ch.id;
+                item["chapterNum"] = ch.chapterNum;
+                item["title"] = ch.title;
+                item["scanlator"] = ch.scanlator;
+                item["url"] = ch.url;
+                item["source_id"] = ch.source_id;
+                arr.push(item);
+            }
+            cacheObj[kv.first] = arr;
+        }
+        root["chapters_cache"] = cacheObj;
+
         std::string jsonStr = Json::stringify(root);
         util::atomicWriteFile(state_file_, jsonStr);
+    }
+
+    void saveChaptersCache(const std::string& mangaTitle, const std::string& sourceId, const std::string& mangaId, const std::vector<UnifiedChapter>& chapters) {
+        if (chapters.empty()) return;
+        std::string k = makeKey(sourceId, mangaId, mangaTitle);
+        chapters_cache_map_[k] = chapters;
+        if (!mangaTitle.empty()) {
+            chapters_cache_map_[mangaTitle] = chapters;
+        }
+        save();
+    }
+
+    std::vector<UnifiedChapter> getCachedChapters(const std::string& mangaTitle, const std::string& sourceId = "", const std::string& mangaId = "") const {
+        std::string k = makeKey(sourceId, mangaId, mangaTitle);
+        auto it = chapters_cache_map_.find(k);
+        if (it != chapters_cache_map_.end() && !it->second.empty()) {
+            return it->second;
+        }
+        if (!mangaTitle.empty()) {
+            auto it2 = chapters_cache_map_.find(mangaTitle);
+            if (it2 != chapters_cache_map_.end() && !it2->second.empty()) {
+                return it2->second;
+            }
+        }
+        return {};
     }
 
     bool isInLibrary(const std::string& sourceId, const std::string& mangaId, const std::string& title = "") const {
