@@ -65,6 +65,11 @@ private:
     bool reader_show_overlay_ = false;
     int reader_page_turn_counter_ = 0;
 
+    // Chapter list navigation & sorting
+    int chapter_page_ = 0;
+    bool detail_sort_descending_ = true;
+    static constexpr int CHAPTERS_PER_PAGE = 11;
+
     // Search and Keyboard state
     bool show_keyboard_ = false;
     std::string search_query_;
@@ -161,12 +166,16 @@ private:
         if (ev.type == EventType::KEY_NEXT_PAGE) {
             if (current_view_ == ViewState::READER) {
                 if (state_.settings().button_inverted) prevPage(); else nextPage();
+            } else if (current_view_ == ViewState::DETAIL) {
+                nextChapterPage();
             }
             return;
         }
         if (ev.type == EventType::KEY_PREV_PAGE) {
             if (current_view_ == ViewState::READER) {
                 if (state_.settings().button_inverted) nextPage(); else prevPage();
+            } else if (current_view_ == ViewState::DETAIL) {
+                prevChapterPage();
             }
             return;
         }
@@ -223,15 +232,28 @@ private:
                 handleKeyboardTouch(x, y);
                 return;
             }
-            if (y >= 10 && y <= TOP_H && x >= SCREEN_W - 160) {
-                show_keyboard_ = false;
-                if (!search_query_.empty()) {
-                    performSearch(search_query_);
-                } else {
+            if (y >= 10 && y <= TOP_H) {
+                if (x >= SCREEN_W - 340 && x < SCREEN_W - 180) {
+                    show_keyboard_ = false;
+                    if (!search_query_.empty()) {
+                        performSearch(search_query_);
+                    } else {
+                        renderAll();
+                        display_.refreshFull(WAVEFORM_GC16);
+                    }
+                    return;
+                }
+                if (x >= SCREEN_W - 180) {
+                    show_keyboard_ = false;
+                    current_view_ = ViewState::SOURCES;
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
+                    return;
                 }
-                return;
+                if (x < SCREEN_W - 340) {
+                    // Tap on search box while keyboard is up: keep keyboard open
+                    return;
+                }
             }
             // Tap outside keyboard dismisses it
             show_keyboard_ = false;
@@ -311,6 +333,7 @@ private:
 
     void loadLocalChapters(const std::string& mangaTitle) {
         selected_chapters_.clear();
+        chapter_page_ = 0;
         std::string dirPath = "/mnt/us/manga/" + mangaTitle;
         std::error_code ec;
 
@@ -326,9 +349,7 @@ private:
                 }
             }
         }
-        std::sort(selected_chapters_.begin(), selected_chapters_.end(), [](const UnifiedChapter& a, const UnifiedChapter& b) {
-            return util::naturalLess(a.title, b.title);
-        });
+        sortChapters();
     }
 
     void handleBrowseTouch(int x, int y) {
@@ -410,17 +431,42 @@ private:
             return;
         }
 
-        // Chapter tapped
-        int start_y = 390;
-        int item_h = 90;
+        // Sort button toggle: y: 305 to 365, right aligned
+        if (x >= SCREEN_W - 280 && x <= SCREEN_W - 20 && y >= 305 && y <= 365) {
+            detail_sort_descending_ = !detail_sort_descending_;
+            sortChapters();
+            chapter_page_ = 0;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
 
-        for (size_t i = 0; i < selected_chapters_.size(); ++i) {
-            int ch_y = start_y + static_cast<int>(i) * item_h - scroll_offset_;
-            if (y >= ch_y && y < ch_y + item_h) {
-                if (selected_chapters_[i].isDownloaded) {
-                    openChapter(static_cast<int>(i));
+        // Pagination buttons: y between 1480 and 1575
+        if (y >= 1480 && y <= 1575) {
+            if (x >= 20 && x <= 230) {
+                prevChapterPage();
+                return;
+            }
+            if (x >= SCREEN_W - 230 && x <= SCREEN_W - 20) {
+                nextChapterPage();
+                return;
+            }
+        }
+
+        // Chapter tapped
+        int start_y = 380;
+        int item_h = 78;
+        int item_gap = 12;
+        int row_stride = item_h + item_gap;
+
+        if (y >= start_y && y < start_y + CHAPTERS_PER_PAGE * row_stride) {
+            int row = (y - start_y) / row_stride;
+            int idx = chapter_page_ * CHAPTERS_PER_PAGE + row;
+            if (idx >= 0 && idx < static_cast<int>(selected_chapters_.size())) {
+                if (selected_chapters_[idx].isDownloaded) {
+                    openChapter(idx);
                 } else {
-                    downloadChapter(static_cast<int>(i));
+                    downloadChapter(idx);
                 }
                 return;
             }
@@ -819,14 +865,94 @@ private:
         display_.refreshFull(WAVEFORM_GC16);
     }
 
+    static double parseChapterNumber(const std::string& s) {
+        if (s.empty()) return -1.0;
+        try {
+            size_t i = 0;
+            while (i < s.size() && !std::isdigit(static_cast<unsigned char>(s[i])) && s[i] != '.') {
+                i++;
+            }
+            if (i < s.size()) {
+                return std::stod(s.substr(i));
+            }
+        } catch (...) {}
+        return -1.0;
+    }
+
+    void sortChapters() {
+        if (selected_chapters_.empty()) return;
+        std::sort(selected_chapters_.begin(), selected_chapters_.end(), [this](const UnifiedChapter& a, const UnifiedChapter& b) {
+            double na = parseChapterNumber(a.chapterNum.empty() ? a.title : a.chapterNum);
+            double nb = parseChapterNumber(b.chapterNum.empty() ? b.title : b.chapterNum);
+            if (na >= 0 && nb >= 0 && std::abs(na - nb) > 0.0001) {
+                return detail_sort_descending_ ? (na > nb) : (na < nb);
+            }
+            if (na >= 0 && nb < 0) return true;
+            if (na < 0 && nb >= 0) return false;
+            return detail_sort_descending_ ? util::naturalLess(b.title, a.title) : util::naturalLess(a.title, b.title);
+        });
+    }
+
+    void nextChapterPage() {
+        int total_pages = std::max(1, (static_cast<int>(selected_chapters_.size()) + CHAPTERS_PER_PAGE - 1) / CHAPTERS_PER_PAGE);
+        if (chapter_page_ < total_pages - 1) {
+            chapter_page_++;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+        }
+    }
+
+    void prevChapterPage() {
+        if (chapter_page_ > 0) {
+            chapter_page_--;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+        }
+    }
+
     void fetchChapters(const std::string& mangaId) {
         std::string err;
         selected_chapters_ = sources_.getChapters(mangaId, &err);
+        chapter_page_ = 0;
+
+        // Check if any chapters are already downloaded locally
+        fs::path destDir = "/mnt/us/manga/" + selected_manga_.title;
+        std::error_code ec;
+        if (fs::exists(destDir, ec)) {
+            for (auto& ch : selected_chapters_) {
+                std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+                fs::path cbzFile = destDir / (safeCh + ".cbz");
+                if (fs::exists(cbzFile, ec)) {
+                    ch.isDownloaded = true;
+                    ch.localPath = cbzFile.string();
+                }
+            }
+        }
+        sortChapters();
     }
 
     static constexpr int KB_Y = 1100;
     static constexpr int KB_ROW_H = 95;
     static constexpr int KB_START_Y = KB_Y + 15;
+
+    void renderSearchBarInput() {
+        int sb_x = 20;
+        int sb_y = 15;
+        int sb_w = SCREEN_W - 360;
+        int sb_h = 50;
+
+        // Clear only the search bar text area to prevent any screen flash or memory corruption
+        canvas_.fillRect(sb_x + 2, sb_y + 2, sb_w - 4, sb_h - 4, 0xFF);
+
+        std::string searchDisplay = search_query_.empty()
+            ? (show_keyboard_ ? "_" : "Search manga...")
+            : (show_keyboard_ ? search_query_ + "_" : search_query_);
+
+        font_.drawText(canvas_, sb_x + 15, sb_y + 12, searchDisplay, 24, (search_query_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
+
+        // Hardware update: only the search bar rectangle in fast DU mode
+        display_.update(sb_x, sb_y, sb_w, sb_h, WAVEFORM_DU, UPDATE_PARTIAL);
+    }
 
     void handleKeyboardTouch(int x, int y) {
         if (y < KB_START_Y) return;
@@ -841,24 +967,30 @@ private:
             int col = (x - 20) / key_w;
             if (col >= 0 && col < num_keys) {
                 search_query_ += rStr[col];
+                renderSearchBarInput();
+                return;
             }
         } else if (row == 3) {
             if (x < 200) {
-                // Close button
+                // Hide button
                 show_keyboard_ = false;
                 renderAll();
                 display_.refreshFull(WAVEFORM_GC16);
                 return;
             } else if (x >= 205 && x < SCREEN_W - 345) {
-                // SPACE
+                // Space
                 search_query_ += " ";
+                renderSearchBarInput();
+                return;
             } else if (x >= SCREEN_W - 345 && x < SCREEN_W - 180) {
-                // Backspace
+                // Bksp
                 if (!search_query_.empty()) {
                     search_query_.pop_back();
+                    renderSearchBarInput();
                 }
+                return;
             } else if (x >= SCREEN_W - 180) {
-                // GO / Submit Search
+                // Search button
                 show_keyboard_ = false;
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
@@ -869,10 +1001,6 @@ private:
                 return;
             }
         }
-
-        // Fast responsive update of search bar without screen flash or driver lockup
-        renderBrowse();
-        display_.update(0, 0, SCREEN_W, TOP_H + 20, WAVEFORM_GC16, UPDATE_PARTIAL);
     }
 
     void performSearch(const std::string& query) {
@@ -1131,31 +1259,83 @@ private:
             font_.drawText(canvas_, 30, TOP_H + 12, status_banner_, 22, 0x00, true);
         }
 
-        drawCoverThumbnail(30, TOP_H + 35, 150, 220, selected_manga_.cover_url, selected_manga_.title, selected_manga_.id);
+        // Cover thumbnail (130x185)
+        drawCoverThumbnail(30, TOP_H + 20, 130, 185, selected_manga_.cover_url, selected_manga_.title, selected_manga_.id);
 
-        font_.drawText(canvas_, 210, TOP_H + 45, selected_manga_.title, 30, 0x00, true);
-        font_.drawText(canvas_, 210, TOP_H + 95, "Author: " + (selected_manga_.author.empty() ? "MangaDex" : selected_manga_.author), 24, 0x40, false);
-        font_.drawText(canvas_, 210, TOP_H + 135, "Status: " + selected_manga_.status, 24, 0x40, false);
+        std::string displayTitle = selected_manga_.title;
+        if (displayTitle.length() > 36) displayTitle = displayTitle.substr(0, 34) + "...";
+        font_.drawText(canvas_, 180, TOP_H + 28, displayTitle, 28, 0x00, true);
+        font_.drawText(canvas_, 180, TOP_H + 70, "Author: " + (selected_manga_.author.empty() ? sources_.getActiveSourceId() : selected_manga_.author), 22, 0x40, false);
+        font_.drawText(canvas_, 180, TOP_H + 105, "Status: " + selected_manga_.status + " | Source: " + sources_.getActiveSourceId(), 22, 0x40, false);
+        font_.drawText(canvas_, 180, TOP_H + 140, "Total: " + std::to_string(selected_chapters_.size()) + " chapters", 22, 0x00, true);
 
-        font_.drawText(canvas_, 30, 345, "Chapters (" + std::to_string(selected_chapters_.size()) + ")", 28, 0x00, true);
-        canvas_.drawHLine(30, 380, SCREEN_W - 60, 0x00, 2);
+        // Section header & Sort control strip
+        font_.drawText(canvas_, 30, 325, "Chapters (" + std::to_string(selected_chapters_.size()) + ")", 26, 0x00, true);
 
-        int y = 395;
-        int item_h = 80;
+        // Sort toggle button
+        std::string sortLabel = detail_sort_descending_ ? "⇅ Sort: Newest" : "⇅ Sort: Oldest";
+        font_.drawButton(canvas_, SCREEN_W - 260, 312, 230, 48, sortLabel, false, 20);
 
-        for (const auto& ch : selected_chapters_) {
+        canvas_.drawHLine(30, 370, SCREEN_W - 60, 0x00, 2);
+
+        // Chapter list page items
+        int total_chapters = static_cast<int>(selected_chapters_.size());
+        int total_pages = std::max(1, (total_chapters + CHAPTERS_PER_PAGE - 1) / CHAPTERS_PER_PAGE);
+        if (chapter_page_ >= total_pages) chapter_page_ = total_pages - 1;
+        if (chapter_page_ < 0) chapter_page_ = 0;
+
+        int start_idx = chapter_page_ * CHAPTERS_PER_PAGE;
+        int end_idx = std::min(start_idx + CHAPTERS_PER_PAGE, total_chapters);
+
+        int start_y = 380;
+        int item_h = 78;
+        int item_gap = 12;
+        int row_stride = item_h + item_gap;
+
+        for (int i = start_idx; i < end_idx; ++i) {
+            int row = i - start_idx;
+            int y = start_y + row * row_stride;
+            const auto& ch = selected_chapters_[i];
+
             canvas_.drawRect(30, y, SCREEN_W - 60, item_h, 0x00, 2);
             std::string label = "Ch. " + ch.chapterNum + (ch.title.empty() ? "" : (" - " + ch.title));
+            if (label.length() > 45) label = label.substr(0, 43) + "...";
             font_.drawText(canvas_, 50, y + 25, label, 24, 0x00, false);
 
             if (ch.isDownloaded) {
-                font_.drawButton(canvas_, SCREEN_W - 200, y + 15, 120, 50, "Read", true, 22);
+                font_.drawButton(canvas_, SCREEN_W - 200, y + 14, 140, 50, "Read", true, 22);
             } else {
-                font_.drawButton(canvas_, SCREEN_W - 220, y + 15, 140, 50, "Download", false, 22);
+                font_.drawButton(canvas_, SCREEN_W - 220, y + 14, 160, 50, "Download", false, 20);
             }
+        }
 
-            y += item_h + 10;
-            if (y > SCREEN_H - NAV_H - item_h) break;
+        // Pagination controls at bottom
+        int pag_y = 1495;
+        canvas_.drawHLine(30, pag_y - 10, SCREEN_W - 60, 0xC0, 1);
+
+        // Prev page button
+        if (chapter_page_ > 0) {
+            font_.drawButton(canvas_, 30, pag_y, 180, 55, "◄ Prev", false, 22);
+        } else {
+            canvas_.drawRect(30, pag_y, 180, 55, 0xC0, 1);
+            font_.drawText(canvas_, 30 + (180 - font_.measureText("◄ Prev", 22, false)) / 2, pag_y + 16, "◄ Prev", 22, 0xC0, false);
+        }
+
+        // Page info text (e.g. "Page 1 of 12  (120 .. 109)")
+        std::string rangeStr = "";
+        if (start_idx < end_idx) {
+            rangeStr = "  (" + selected_chapters_[start_idx].chapterNum + " .. " + selected_chapters_[end_idx - 1].chapterNum + ")";
+        }
+        std::string pageInfo = "Page " + std::to_string(chapter_page_ + 1) + " of " + std::to_string(total_pages) + rangeStr;
+        int textW = font_.measureText(pageInfo, 22, true);
+        font_.drawText(canvas_, (SCREEN_W - textW) / 2, pag_y + 16, pageInfo, 22, 0x00, true);
+
+        // Next page button
+        if (chapter_page_ < total_pages - 1) {
+            font_.drawButton(canvas_, SCREEN_W - 210, pag_y, 180, 55, "Next ►", false, 22);
+        } else {
+            canvas_.drawRect(SCREEN_W - 210, pag_y, 180, 55, 0xC0, 1);
+            font_.drawText(canvas_, SCREEN_W - 210 + (180 - font_.measureText("Next ►", 22, false)) / 2, pag_y + 16, "Next ►", 22, 0xC0, false);
         }
     }
 
