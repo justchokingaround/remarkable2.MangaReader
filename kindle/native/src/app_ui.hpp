@@ -380,13 +380,13 @@ private:
         }
         loadMangaChapters(selected_manga_);
 
+        double heroNum = parseChapterNumber(hero.chapter_title);
         for (size_t i = 0; i < selected_chapters_.size(); ++i) {
+            double chNum = parseChapterNumber(selected_chapters_[i].chapterNum.empty() ? selected_chapters_[i].title : selected_chapters_[i].chapterNum);
             if (selected_chapters_[i].title == hero.chapter_title ||
-                selected_chapters_[i].chapterNum == hero.chapter_title) {
-                openChapter(static_cast<int>(i));
-                reader_current_page_ = std::min(hero.page_index, std::max(0, reader_total_pages_ - 1));
-                renderReader();
-                display_.refreshFull(WAVEFORM_GC16);
+                selected_chapters_[i].chapterNum == hero.chapter_title ||
+                (chNum >= 0 && heroNum >= 0 && std::abs(chNum - heroNum) < 0.0001)) {
+                openChapter(static_cast<int>(i), true, hero.page_index);
                 return;
             }
         }
@@ -396,13 +396,23 @@ private:
     }
 
     void loadMangaChapters(const UnifiedManga& manga) {
+        selected_manga_ = manga;
         selected_chapters_.clear();
         chapter_page_ = 0;
 
         // 1. Try to load cached full chapter catalog
         selected_chapters_ = state_.getCachedChapters(manga.title, manga.source_id, manga.id);
 
-        // 2. Scan local storage for downloaded .cbz files
+        // 2. If cached chapter catalog is empty and remote source is known, fetch full catalog from source
+        if (selected_chapters_.empty() && !manga.id.empty() && !manga.source_id.empty() && manga.source_id != "local") {
+            sources_.setActiveSourceId(manga.source_id);
+            fetchChapters(manga.id);
+            if (!selected_chapters_.empty()) {
+                return;
+            }
+        }
+
+        // 3. Reconcile with local storage for downloaded .cbz files
         std::string dirPath = "/mnt/us/manga/" + manga.title;
         std::error_code ec;
 
@@ -410,16 +420,21 @@ private:
             for (const auto& f : fs::directory_iterator(dirPath, ec)) {
                 if (f.path().extension() == ".cbz") {
                     std::string stem = f.path().stem().string();
+                    double fileNum = parseChapterNumber(stem);
                     bool matched = false;
+
                     for (auto& ch : selected_chapters_) {
+                        double chNum = parseChapterNumber(ch.chapterNum.empty() ? ch.title : ch.chapterNum);
                         std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
-                        if (ch.title == stem || ch.chapterNum == stem || safeCh == stem) {
+                        if (ch.title == stem || ch.chapterNum == stem || safeCh == stem ||
+                            (fileNum >= 0 && chNum >= 0 && std::abs(fileNum - chNum) < 0.0001)) {
                             ch.isDownloaded = true;
                             ch.localPath = f.path().string();
                             matched = true;
                             break;
                         }
                     }
+
                     if (!matched) {
                         UnifiedChapter localCh;
                         localCh.title = stem;
@@ -432,13 +447,10 @@ private:
             }
         }
 
-        // 3. If cache was empty and no local files, but source is known, fetch chapters
-        if (selected_chapters_.empty() && !manga.id.empty() && !manga.source_id.empty() && manga.source_id != "local") {
-            fetchChapters(manga.id);
-            return;
-        }
-
         sortChapters();
+        if (!selected_chapters_.empty()) {
+            state_.saveChaptersCache(manga.title, manga.source_id, manga.id, selected_chapters_);
+        }
     }
 
     void handleBrowseTouch(int x, int y) {
@@ -532,7 +544,10 @@ private:
 
         // Primary Read button: x: 180..420, y: TOP_H + 155..TOP_H + 225
         if (x >= 180 && x <= 420 && y >= TOP_H + 155 && y <= TOP_H + 225) {
-            if (!selected_chapters_.empty()) {
+            MangaProgress prog;
+            if (state_.getProgress(selected_manga_.title, prog)) {
+                resumeHero(prog);
+            } else if (!selected_chapters_.empty()) {
                 openChapter(0);
             }
             return;
@@ -953,13 +968,7 @@ private:
 
     void openChapterAtEnd(int chIdx) {
         if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
-        openChapter(chIdx);
-        if (reader_total_pages_ > 0) {
-            reader_current_page_ = reader_total_pages_ - 1;
-            recordProgress();
-            renderReader();
-            display_.refreshFull(WAVEFORM_GC16);
-        }
+        openChapter(chIdx, true, 999999);
     }
 
     void triggerBackgroundPreload() {
@@ -971,9 +980,10 @@ private:
         std::string safeManga = selected_manga_.title;
         std::string safeCh;
         std::string nextCid;
+        UnifiedChapter nextCh;
         {
             std::lock_guard<std::mutex> lock(chapters_mu_);
-            const auto& nextCh = selected_chapters_[nextIdx];
+            nextCh = selected_chapters_[nextIdx];
             safeCh = nextCh.chapterNum.empty() ? "chapter" : ("chapter_" + nextCh.chapterNum);
             nextCid = nextCh.id.empty() ? nextCh.title : nextCh.id;
         }
@@ -988,6 +998,21 @@ private:
             selected_chapters_[nextIdx].isDownloaded = true;
             selected_chapters_[nextIdx].localPath = cbzFile.string();
             return;
+        } else {
+            double chNum = parseChapterNumber(nextCh.chapterNum.empty() ? nextCh.title : nextCh.chapterNum);
+            if (chNum >= 0 && fs::exists(destDir, ec)) {
+                for (const auto& f : fs::directory_iterator(destDir, ec)) {
+                    if (f.path().extension() == ".cbz") {
+                        double fNum = parseChapterNumber(f.path().stem().string());
+                        if (fNum >= 0 && std::abs(fNum - chNum) < 0.0001) {
+                            std::lock_guard<std::mutex> lock(chapters_mu_);
+                            selected_chapters_[nextIdx].isDownloaded = true;
+                            selected_chapters_[nextIdx].localPath = f.path().string();
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
         // Start background preloading
@@ -1031,7 +1056,10 @@ private:
 
         preload_pct_ = 10;
 
-        if (ch.source_id == "mangafox" || ch.source_id == "mangakatana") {
+        std::string srcId = ch.source_id.empty() ? selected_manga_.source_id : ch.source_id;
+        ch.source_id = srcId;
+
+        if (srcId == "mangafox" || srcId == "mangakatana") {
             std::vector<std::string> pageUrls = sources_.getChapterPageUrls(ch, &err);
             if (pageUrls.empty() || shutting_down_.load()) {
                 fs::remove_all(tmpExtract, ec);
@@ -1192,7 +1220,7 @@ private:
         }
     }
 
-    void openChapter(int chIdx, bool autoOpenAfterDownload = true) {
+    void openChapter(int chIdx, bool autoOpenAfterDownload = true, int startPage = 0) {
         if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
         current_chapter_idx_ = chIdx;
         auto& ch = selected_chapters_[chIdx];
@@ -1205,6 +1233,20 @@ private:
         if (fs::exists(cbzFile, ec)) {
             ch.isDownloaded = true;
             ch.localPath = cbzFile.string();
+        } else {
+            double chNum = parseChapterNumber(ch.chapterNum.empty() ? ch.title : ch.chapterNum);
+            if (chNum >= 0 && fs::exists(destDir, ec)) {
+                for (const auto& f : fs::directory_iterator(destDir, ec)) {
+                    if (f.path().extension() == ".cbz") {
+                        double fNum = parseChapterNumber(f.path().stem().string());
+                        if (fNum >= 0 && std::abs(fNum - chNum) < 0.0001) {
+                            ch.isDownloaded = true;
+                            ch.localPath = f.path().string();
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if (ch.isDownloaded && fs::exists(ch.localPath, ec)) {
@@ -1212,15 +1254,15 @@ private:
             std::set<std::string> pinned;
             reader_page_files_ = page_cache_.extractCbz(ch.id.empty() ? ch.title : ch.id, ch.localPath, pinned, &err);
             reader_total_pages_ = static_cast<int>(reader_page_files_.size());
-            reader_current_page_ = 0;
+            reader_current_page_ = std::min(startPage, std::max(0, reader_total_pages_ - 1));
             reader_show_overlay_ = false;
             current_view_ = ViewState::READER;
             recordProgress();
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
 
-            // If chapter has 5 or fewer pages total, start preloading next chapter right away
-            if (reader_total_pages_ <= 5) {
+            // If within 5 pages of chapter end, start preloading next chapter right away
+            if (reader_total_pages_ > 0 && reader_current_page_ >= reader_total_pages_ - 5) {
                 triggerBackgroundPreload();
             }
         } else {
@@ -1243,6 +1285,10 @@ private:
     void downloadChapter(int chIdx, bool autoOpen = false) {
         if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
         auto& ch = selected_chapters_[chIdx];
+
+        if (ch.source_id.empty()) {
+            ch.source_id = selected_manga_.source_id;
+        }
 
         updateDownloadProgress("Connecting to " + ch.source_id + " for Ch. " + ch.chapterNum + "...", 5);
 
@@ -1459,13 +1505,29 @@ private:
             for (auto& ch : selected_chapters_) {
                 std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
                 fs::path cbzFile = destDir / (safeCh + ".cbz");
+                double chNum = parseChapterNumber(ch.chapterNum.empty() ? ch.title : ch.chapterNum);
+
                 if (fs::exists(cbzFile, ec)) {
                     ch.isDownloaded = true;
                     ch.localPath = cbzFile.string();
+                } else {
+                    for (const auto& f : fs::directory_iterator(destDir, ec)) {
+                        if (f.path().extension() == ".cbz") {
+                            double fNum = parseChapterNumber(f.path().stem().string());
+                            if (fNum >= 0 && chNum >= 0 && std::abs(fNum - chNum) < 0.0001) {
+                                ch.isDownloaded = true;
+                                ch.localPath = f.path().string();
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
         sortChapters();
+        if (!selected_chapters_.empty()) {
+            state_.saveChaptersCache(selected_manga_.title, selected_manga_.source_id, selected_manga_.id, selected_chapters_);
+        }
     }
 
     static constexpr int KB_Y = 1130;
