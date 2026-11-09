@@ -35,18 +35,81 @@ private:
 public:
     FontManager() = default;
 
-    bool init(const std::string& regular_path = "/usr/java/lib/fonts/Amazon-Ember-Regular.ttf",
-              const std::string& bold_path = "/usr/java/lib/fonts/Amazon-Ember-Bold.ttf") {
-        if (loadFile(regular_path, regular_data_)) {
-            if (stbtt_InitFont(&regular_font_, regular_data_.data(), 0)) {
-                regular_loaded_ = true;
+    bool init(const std::string& custom_reg = "", const std::string& custom_bold = "") {
+        const std::vector<std::string> reg_candidates = {
+            custom_reg,
+            "/usr/java/lib/fonts/Amazon-Ember-Regular.ttf",
+            "/usr/java/lib/fonts/AmazonEmber-Regular.ttf",
+            "/usr/java/lib/fonts/Amazon-Ember_Rg.ttf",
+            "/usr/java/lib/fonts/AmazonEmber_Rg.ttf",
+            "/usr/share/fonts/AmazonEmber-Regular.ttf",
+            "/usr/share/fonts/Amazon-Ember-Regular.ttf",
+            "/usr/share/fonts/truetype/AmazonEmber-Regular.ttf",
+            "/usr/share/fonts/opentype/AmazonEmber-Regular.ttf",
+            "/usr/share/fonts/default/AmazonEmber-Regular.ttf",
+            "/usr/share/fonts/default/truetype/AmazonEmber-Regular.ttf",
+            "/opt/amazon/ebook/fonts/AmazonEmber-Regular.ttf",
+            "/opt/amazon/ebook/fonts/Amazon-Ember-Regular.ttf",
+            "/var/local/java/lib/fonts/AmazonEmber-Regular.ttf",
+            "/mnt/us/fonts/AmazonEmber-Regular.ttf",
+            "/mnt/us/system/fonts/AmazonEmber-Regular.ttf",
+            "/mnt/us/extensions/rm2manga/fonts/regular.ttf",
+            "/usr/java/lib/fonts/Bookerly-Regular.ttf",
+            "/usr/share/fonts/truetype/Bookerly-Regular.ttf",
+            "/usr/java/lib/fonts/Caecilia_LT_65_Medium.ttf",
+            "/usr/java/lib/fonts/Caecilia_LT_55_Roman.ttf",
+            "/usr/java/lib/fonts/Helvetica-Roman.ttf",
+            "/mnt/us/koreader/fonts/freefont/FreeSans.ttf",
+            "/opt/koreader/fonts/freefont/FreeSans.ttf",
+            "/mnt/us/koreader/fonts/noto/NotoSans-Regular.ttf"
+        };
+
+        for (const auto& p : reg_candidates) {
+            if (p.empty()) continue;
+            if (loadFile(p, regular_data_)) {
+                if (stbtt_InitFont(&regular_font_, regular_data_.data(), 0)) {
+                    regular_loaded_ = true;
+                    break;
+                }
             }
         }
-        if (loadFile(bold_path, bold_data_)) {
-            if (stbtt_InitFont(&bold_font_, bold_data_.data(), 0)) {
-                bold_loaded_ = true;
+
+        const std::vector<std::string> bold_candidates = {
+            custom_bold,
+            "/usr/java/lib/fonts/Amazon-Ember-Bold.ttf",
+            "/usr/java/lib/fonts/AmazonEmber-Bold.ttf",
+            "/usr/java/lib/fonts/Amazon-Ember_Bd.ttf",
+            "/usr/java/lib/fonts/AmazonEmber_Bd.ttf",
+            "/usr/share/fonts/AmazonEmber-Bold.ttf",
+            "/usr/share/fonts/Amazon-Ember-Bold.ttf",
+            "/usr/share/fonts/truetype/AmazonEmber-Bold.ttf",
+            "/usr/share/fonts/opentype/AmazonEmber-Bold.ttf",
+            "/usr/share/fonts/default/AmazonEmber-Bold.ttf",
+            "/usr/share/fonts/default/truetype/AmazonEmber-Bold.ttf",
+            "/opt/amazon/ebook/fonts/AmazonEmber-Bold.ttf",
+            "/opt/amazon/ebook/fonts/Amazon-Ember-Bold.ttf",
+            "/var/local/java/lib/fonts/AmazonEmber-Bold.ttf",
+            "/mnt/us/fonts/AmazonEmber-Bold.ttf",
+            "/mnt/us/system/fonts/AmazonEmber-Bold.ttf",
+            "/mnt/us/extensions/rm2manga/fonts/bold.ttf",
+            "/usr/java/lib/fonts/Bookerly-Bold.ttf",
+            "/usr/share/fonts/truetype/Bookerly-Bold.ttf",
+            "/usr/java/lib/fonts/Caecilia_LT_75_Bold.ttf",
+            "/usr/java/lib/fonts/Helvetica-Bold.ttf",
+            "/mnt/us/koreader/fonts/freefont/FreeSansBold.ttf",
+            "/opt/koreader/fonts/freefont/FreeSansBold.ttf"
+        };
+
+        for (const auto& p : bold_candidates) {
+            if (p.empty()) continue;
+            if (loadFile(p, bold_data_)) {
+                if (stbtt_InitFont(&bold_font_, bold_data_.data(), 0)) {
+                    bold_loaded_ = true;
+                    break;
+                }
             }
         }
+
         return regular_loaded_;
     }
 

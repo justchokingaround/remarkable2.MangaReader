@@ -72,6 +72,8 @@ private:
 
     // Search and Keyboard state
     bool show_keyboard_ = false;
+    bool kb_shift_active_ = false;
+    bool kb_symbols_mode_ = false;
     std::string search_query_;
     std::string status_banner_;
 
@@ -253,7 +255,7 @@ private:
 
         // 2. Keyboard touch if active
         if (show_keyboard_) {
-            if (y >= 1100 && y < SCREEN_H - NAV_H) {
+            if (y >= KB_Y && y < SCREEN_H - NAV_H) {
                 handleKeyboardTouch(x, y);
                 return;
             }
@@ -1079,9 +1081,25 @@ private:
         sortChapters();
     }
 
-    static constexpr int KB_Y = 1100;
-    static constexpr int KB_ROW_H = 95;
+    static constexpr int KB_Y = 1130;
+    static constexpr int KB_ROW_H = 105;
     static constexpr int KB_START_Y = KB_Y + 15;
+    static constexpr int KB_KEY_H = 92;
+    static constexpr int KB_KEY_W = 114;
+    static constexpr int KB_KEY_GAP = 8;
+    static constexpr int KB_KEY_STEP = 122; // KB_KEY_W + KB_KEY_GAP
+
+    void renderKey(int x, int y, int w, int h, const std::string& label, bool inverted = false, bool funcKey = false, int fontSize = 30) {
+        uint8_t bg = inverted ? 0x00 : (funcKey ? 0xE6 : 0xFF);
+        uint8_t fg = inverted ? 0xFF : 0x00;
+        canvas_.fillRect(x, y, w, h, bg);
+        canvas_.drawRect(x, y, w, h, 0x00, 2);
+
+        int tw = font_.measureText(label, fontSize, true);
+        int tx = x + (w - tw) / 2;
+        int ty = y + (h - fontSize) / 2;
+        font_.drawText(canvas_, tx, ty, label, fontSize, fg, true);
+    }
 
     void renderSearchBarInput() {
         int sb_x = 20;
@@ -1103,42 +1121,120 @@ private:
     }
 
     void handleKeyboardTouch(int x, int y) {
-        if (y < KB_START_Y) return;
+        if (y < KB_START_Y || y >= KB_START_Y + 4 * KB_ROW_H) return;
         int row = (y - KB_START_Y) / KB_ROW_H;
         if (row < 0 || row > 3) return;
 
-        if (row < 3) {
-            const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
-            std::string rStr = rows[row];
-            int num_keys = static_cast<int>(rStr.length());
-            int key_w = (SCREEN_W - 40) / num_keys;
-            int col = (x - 20) / key_w;
-            if (col >= 0 && col < num_keys) {
-                search_query_ += rStr[col];
+        bool updated_keyboard = false;
+
+        if (row == 0) {
+            // Row 0 (10 keys: 26 + k * 122)
+            int col = (x - 26) / KB_KEY_STEP;
+            int rel = (x - 26) % KB_KEY_STEP;
+            if (col >= 0 && col < 10 && rel < KB_KEY_W) {
+                if (kb_symbols_mode_) {
+                    const char sym0[] = "1234567890";
+                    search_query_ += sym0[col];
+                } else {
+                    const char low0[] = "qwertyuiop";
+                    const char up0[] = "QWERTYUIOP";
+                    search_query_ += (kb_shift_active_ ? up0[col] : low0[col]);
+                    if (kb_shift_active_) {
+                        kb_shift_active_ = false;
+                        updated_keyboard = true;
+                    }
+                }
                 renderSearchBarInput();
+                if (updated_keyboard) {
+                    renderKeyboard();
+                    display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                }
                 return;
             }
-        } else if (row == 3) {
-            if (x < 200) {
-                // Hide button
-                show_keyboard_ = false;
-                renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
-                return;
-            } else if (x >= 205 && x < SCREEN_W - 345) {
-                // Space
-                search_query_ += " ";
+        } else if (row == 1) {
+            // Row 1 (9 keys: 87 + k * 122)
+            int col = (x - 87) / KB_KEY_STEP;
+            int rel = (x - 87) % KB_KEY_STEP;
+            if (col >= 0 && col < 9 && rel >= 0 && rel < KB_KEY_W) {
+                if (kb_symbols_mode_) {
+                    const char sym1[] = "-/:;()$&@";
+                    search_query_ += sym1[col];
+                } else {
+                    const char low1[] = "asdfghjkl";
+                    const char up1[] = "ASDFGHJKL";
+                    search_query_ += (kb_shift_active_ ? up1[col] : low1[col]);
+                    if (kb_shift_active_) {
+                        kb_shift_active_ = false;
+                        updated_keyboard = true;
+                    }
+                }
                 renderSearchBarInput();
+                if (updated_keyboard) {
+                    renderKeyboard();
+                    display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                }
                 return;
-            } else if (x >= SCREEN_W - 345 && x < SCREEN_W - 180) {
-                // Bksp
+            }
+        } else if (row == 2) {
+            // Row 2: Shift (26..201), 7 keys (209..1055), Bksp (1063..1238)
+            if (x >= 26 && x < 201) {
+                // Shift toggle
+                kb_shift_active_ = !kb_shift_active_;
+                renderKeyboard();
+                display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                return;
+            } else if (x >= 1063 && x < 1238) {
+                // Backspace
                 if (!search_query_.empty()) {
                     search_query_.pop_back();
                     renderSearchBarInput();
                 }
                 return;
-            } else if (x >= SCREEN_W - 180) {
-                // Search button
+            } else if (x >= 209 && x < 1063) {
+                int col = (x - 209) / KB_KEY_STEP;
+                int rel = (x - 209) % KB_KEY_STEP;
+                if (col >= 0 && col < 7 && rel < KB_KEY_W) {
+                    if (kb_symbols_mode_) {
+                        const char sym2[] = ".,?!'\"_";
+                        search_query_ += sym2[col];
+                    } else {
+                        const char low2[] = "zxcvbnm";
+                        const char up2[] = "ZXCVBNM";
+                        search_query_ += (kb_shift_active_ ? up2[col] : low2[col]);
+                        if (kb_shift_active_) {
+                            kb_shift_active_ = false;
+                            updated_keyboard = true;
+                        }
+                    }
+                    renderSearchBarInput();
+                    if (updated_keyboard) {
+                        renderKeyboard();
+                        display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                    }
+                    return;
+                }
+            }
+        } else if (row == 3) {
+            // Row 3: ?123 / ABC (26..201), Close (209..359), Space (367..1048), Search (1056..1238)
+            if (x >= 26 && x < 201) {
+                // Symbols / ABC toggle
+                kb_symbols_mode_ = !kb_symbols_mode_;
+                renderKeyboard();
+                display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                return;
+            } else if (x >= 209 && x < 359) {
+                // Close / Hide
+                show_keyboard_ = false;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            } else if (x >= 367 && x < 1048) {
+                // Space
+                search_query_ += " ";
+                renderSearchBarInput();
+                return;
+            } else if (x >= 1056 && x < 1238) {
+                // Search
                 show_keyboard_ = false;
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
@@ -1710,36 +1806,67 @@ private:
 
     void renderKeyboard() {
         int kb_h = SCREEN_H - NAV_H - KB_Y;
-        canvas_.fillRect(0, KB_Y, SCREEN_W, kb_h, 0xF0);
-        canvas_.drawHLine(0, KB_Y, SCREEN_W, 0x00, 3);
+        canvas_.fillRect(0, KB_Y, SCREEN_W, kb_h, 0xEE);
+        canvas_.drawHLine(0, KB_Y, SCREEN_W, 0x80, 2);
 
-        const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
-
-        for (int r = 0; r < 3; ++r) {
-            std::string rStr = rows[r];
-            int num_keys = static_cast<int>(rStr.length());
-            int key_w = (SCREEN_W - 40) / num_keys;
-            int y = KB_START_Y + r * KB_ROW_H;
-
-            for (int k = 0; k < num_keys; ++k) {
-                int x = 20 + k * key_w;
-                font_.drawButton(canvas_, x + 3, y, key_w - 6, KB_ROW_H - 10, std::string(1, rStr[k]), false, 32);
+        // Row 0 (10 keys: 26 + k * 122)
+        int y0 = KB_START_Y;
+        if (kb_symbols_mode_) {
+            const char* syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
+            for (int k = 0; k < 10; ++k) {
+                renderKey(26 + k * KB_KEY_STEP, y0, KB_KEY_W, KB_KEY_H, syms[k], false, false, 32);
+            }
+        } else {
+            const char* letters_up[] = { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
+            const char* letters_low[] = { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" };
+            for (int k = 0; k < 10; ++k) {
+                renderKey(26 + k * KB_KEY_STEP, y0, KB_KEY_W, KB_KEY_H, kb_shift_active_ ? letters_up[k] : letters_low[k], false, false, 32);
             }
         }
 
-        int bot_y = KB_START_Y + 3 * KB_ROW_H;
-        int close_w = 170;
-        int go_w = 160;
-        int back_w = 150;
-        font_.drawButton(canvas_, 20, bot_y, close_w, KB_ROW_H - 10, "Hide", false, 24);
-        int space_x = 20 + close_w + 15;
-        int right_ctrl_w = back_w + 15 + go_w;
-        int space_w = SCREEN_W - 20 - right_ctrl_w - 15 - space_x;
-        font_.drawButton(canvas_, space_x, bot_y, space_w, KB_ROW_H - 10, "Space", false, 24);
-        int back_x = space_x + space_w + 15;
-        font_.drawButton(canvas_, back_x, bot_y, back_w, KB_ROW_H - 10, "Bksp", false, 24);
-        int go_x = back_x + back_w + 15;
-        font_.drawButton(canvas_, go_x, bot_y, go_w, KB_ROW_H - 10, "Search", true, 24);
+        // Row 1 (9 keys: 87 + k * 122)
+        int y1 = KB_START_Y + KB_ROW_H;
+        if (kb_symbols_mode_) {
+            const char* syms[] = { "-", "/", ":", ";", "(", ")", "$", "&", "@" };
+            for (int k = 0; k < 9; ++k) {
+                renderKey(87 + k * KB_KEY_STEP, y1, KB_KEY_W, KB_KEY_H, syms[k], false, false, 32);
+            }
+        } else {
+            const char* letters_up[] = { "A", "S", "D", "F", "G", "H", "J", "K", "L" };
+            const char* letters_low[] = { "a", "s", "d", "f", "g", "h", "j", "k", "l" };
+            for (int k = 0; k < 9; ++k) {
+                renderKey(87 + k * KB_KEY_STEP, y1, KB_KEY_W, KB_KEY_H, kb_shift_active_ ? letters_up[k] : letters_low[k], false, false, 32);
+            }
+        }
+
+        // Row 2 (Shift + 7 keys + Bksp)
+        int y2 = KB_START_Y + 2 * KB_ROW_H;
+        // Shift key
+        renderKey(26, y2, 175, KB_KEY_H, kb_shift_active_ ? "^ Shift" : "Shift", kb_shift_active_, !kb_shift_active_, 26);
+
+        // Middle 7 keys (209 + k * 122)
+        if (kb_symbols_mode_) {
+            const char* syms[] = { ".", ",", "?", "!", "'", "\"", "_" };
+            for (int k = 0; k < 7; ++k) {
+                renderKey(209 + k * KB_KEY_STEP, y2, KB_KEY_W, KB_KEY_H, syms[k], false, false, 32);
+            }
+        } else {
+            const char* letters_up[] = { "Z", "X", "C", "V", "B", "N", "M" };
+            const char* letters_low[] = { "z", "x", "c", "v", "b", "n", "m" };
+            for (int k = 0; k < 7; ++k) {
+                renderKey(209 + k * KB_KEY_STEP, y2, KB_KEY_W, KB_KEY_H, kb_shift_active_ ? letters_up[k] : letters_low[k], false, false, 32);
+            }
+        }
+
+        // Backspace key
+        renderKey(1063, y2, 175, KB_KEY_H, "Bksp", false, true, 26);
+
+        // Row 3 (Bottom row: ?123 / ABC, Close, Space, Search)
+        int y3 = KB_START_Y + 3 * KB_ROW_H;
+        renderKey(26, y3, 175, KB_KEY_H, kb_symbols_mode_ ? "ABC" : "?123", kb_symbols_mode_, !kb_symbols_mode_, 26);
+        renderKey(209, y3, 150, KB_KEY_H, "Close", false, true, 24);
+        renderKey(367, y3, 681, KB_KEY_H, "space", false, false, 24);
+        renderKey(1056, y3, 182, KB_KEY_H, "Search", true, false, 26);
     }
 
     void renderBottomNav() {
