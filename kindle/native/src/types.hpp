@@ -36,6 +36,11 @@ struct SourceInfo {
     std::string id;
     std::string name;
     std::string description;
+    bool is_installed = true;
+    bool is_aidoku = false;
+    std::string version = "1.0";
+    std::string language = "en";
+    std::string icon_url;
 };
 
 struct MangaProgress {

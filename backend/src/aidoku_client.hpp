@@ -38,6 +38,8 @@ class Client {
     pid_t spawnedPid_ = -1;
 
 public:
+    Client() : Client("/mnt/us/manga/data/aidoku") {}
+
     explicit Client(const fs::path& defaultHomeDir) {
         const char* envSock = std::getenv("RM2MANGA_AIDOKU_SOCK");
         if (!envSock) envSock = std::getenv("RM2MANGA_RAKUYOMI_SOCK");
@@ -54,12 +56,22 @@ public:
             serverBin_ = envBin;
         } else if (::access("./backend/aidoku-server", X_OK) == 0) {
             serverBin_ = fs::absolute("./backend/aidoku-server").string();
+        } else if (::access("/mnt/us/extensions/rm2manga/bin/aidoku-server", X_OK) == 0) {
+            serverBin_ = "/mnt/us/extensions/rm2manga/bin/aidoku-server";
+        } else if (::access("/mnt/us/koreader/plugins/rakuyomi.koplugin/server", X_OK) == 0) {
+            serverBin_ = "/mnt/us/koreader/plugins/rakuyomi.koplugin/server";
         } else {
             serverBin_ = "/home/root/xovi/exthome/appload/koreader/plugins/rakuyomi.koplugin/server";
         }
 
         std::error_code ec;
-        homeDir_ = envHome ? envHome : fs::absolute(defaultHomeDir, ec).string();
+        if (envHome) {
+            homeDir_ = envHome;
+        } else if (!defaultHomeDir.empty()) {
+            homeDir_ = fs::absolute(defaultHomeDir, ec).string();
+        } else {
+            homeDir_ = "/mnt/us/manga/data/aidoku";
+        }
         ensureSettingsInitialized();
     }
 
@@ -82,7 +94,9 @@ public:
         if (!fs::exists(cfgPath, ec)) {
             std::string initial =
                 "{\n"
-                "  \"source_lists\": [],\n"
+                "  \"source_lists\": [\n"
+                "    \"https://raw.githubusercontent.com/Aidoku-Community/Aidoku-Community/main/index.min.json\"\n"
+                "  ],\n"
                 "  \"languages\": [\"en\"]\n"
                 "}\n";
             util::atomicWriteFile(cfgPath, initial);

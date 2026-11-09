@@ -75,11 +75,29 @@ private:
     static constexpr int CHAPTERS_PER_PAGE = 11;
 
     // Search and Keyboard state
+    enum class KeyboardTarget {
+        SEARCH = 0,
+        REPO_URL = 1
+    };
+    KeyboardTarget kb_target_ = KeyboardTarget::SEARCH;
     bool show_keyboard_ = false;
     bool kb_shift_active_ = false;
     bool kb_symbols_mode_ = false;
     std::string search_query_;
     std::string status_banner_;
+
+    // Sources and Extension Catalog state
+    enum class SourcesSubTab {
+        INSTALLED = 0,
+        AVAILABLE = 1,
+        REPOSITORIES = 2
+    };
+    SourcesSubTab sources_sub_tab_ = SourcesSubTab::INSTALLED;
+    std::vector<SourceInfo> available_aidoku_sources_;
+    bool available_sources_loaded_ = false;
+    int available_sources_page_ = 0;
+    static constexpr int AVAILABLE_PER_PAGE = 7;
+    std::string repo_url_input_;
 
     // Live Download Progress
     bool download_active_ = false;
@@ -215,6 +233,16 @@ private:
 
     void handleInput(const InputEvent& ev) {
         if (ev.type == EventType::KEY_NEXT_PAGE) {
+            if (current_view_ == ViewState::SOURCES && sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
+                int totalItems = static_cast<int>(available_aidoku_sources_.size());
+                int totalPages = (totalItems + AVAILABLE_PER_PAGE - 1) / AVAILABLE_PER_PAGE;
+                if (available_sources_page_ + 1 < totalPages) {
+                    available_sources_page_++;
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                }
+                return;
+            }
             if (current_view_ == ViewState::READER) {
                 if (state_.settings().button_inverted) prevPage(); else nextPage();
             } else if (current_view_ == ViewState::DETAIL) {
@@ -228,6 +256,14 @@ private:
             return;
         }
         if (ev.type == EventType::KEY_PREV_PAGE) {
+            if (current_view_ == ViewState::SOURCES && sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
+                if (available_sources_page_ > 0) {
+                    available_sources_page_--;
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                }
+                return;
+            }
             if (current_view_ == ViewState::READER) {
                 if (state_.settings().button_inverted) nextPage(); else prevPage();
             } else if (current_view_ == ViewState::DETAIL) {
@@ -860,34 +896,270 @@ private:
 
         // Back button to Browse
         if (x >= SCREEN_W - 330 && x < SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
+            show_keyboard_ = false;
             current_view_ = ViewState::BROWSE;
             renderAll();
             display_.refreshFull(WAVEFORM_GC16);
             return;
         }
 
-        int start_y = TOP_H + 35;
-        int card_h = 130;
-        const auto& srcList = sources_.getSources();
+        // Sub-navigation tabs: Y = 75 to 135
+        if (y >= 75 && y <= 135) {
+            show_keyboard_ = false;
+            if (x < 420) {
+                sources_sub_tab_ = SourcesSubTab::INSTALLED;
+                sources_.refreshSources();
+            } else if (x >= 420 && x < 835) {
+                sources_sub_tab_ = SourcesSubTab::AVAILABLE;
+                if (!available_sources_loaded_) {
+                    status_banner_ = "Fetching extensions from repository...";
+                    renderSources();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    std::string err;
+                    available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
+                    available_sources_loaded_ = true;
+                    if (!err.empty()) status_banner_ = "Repository error: " + err;
+                    else status_banner_.clear();
+                }
+            } else {
+                sources_sub_tab_ = SourcesSubTab::REPOSITORIES;
+            }
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
 
-        for (size_t i = 0; i < srcList.size(); ++i) {
-            int cy = start_y + static_cast<int>(i) * (card_h + 15);
-            if (y >= cy && y <= cy + card_h) {
-                sources_.setActiveSourceId(srcList[i].id);
-                status_banner_ = "Active source: " + srcList[i].name;
-                fetchPopular();
-                renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
-                return;
+        int contentY = 75 + 55 + 48; // ~178
+
+        if (sources_sub_tab_ == SourcesSubTab::INSTALLED) {
+            handleInstalledSourcesTouch(x, y, contentY);
+        } else if (sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
+            handleAvailableSourcesTouch(x, y, contentY);
+        } else if (sources_sub_tab_ == SourcesSubTab::REPOSITORIES) {
+            handleRepositoriesTouch(x, y, contentY);
+        }
+    }
+
+    void handleInstalledSourcesTouch(int x, int y, int startY) {
+        const auto& srcList = sources_.getSources();
+        int cardH = 120;
+        int maxVisible = 6;
+        for (size_t i = 0; i < srcList.size() && static_cast<int>(i) < maxVisible; ++i) {
+            int cy = startY + static_cast<int>(i) * (cardH + 12);
+            if (y >= cy && y <= cy + cardH) {
+                // If tapped Uninstall button
+                if (srcList[i].is_aidoku && x >= SCREEN_W - 365 && x < SCREEN_W - 210) {
+                    status_banner_ = "Uninstalling " + srcList[i].name + "...";
+                    renderSources();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    std::string err;
+                    if (sources_.uninstallAidokuSource(srcList[i].id, &err)) {
+                        status_banner_ = "✓ Uninstalled " + srcList[i].name;
+                        available_sources_loaded_ = false;
+                    } else {
+                        status_banner_ = "Failed: " + err;
+                    }
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+
+                // If tapped Select / Active button or row
+                if (x >= SCREEN_W - 200 || x < SCREEN_W - 365) {
+                    sources_.setActiveSourceId(srcList[i].id);
+                    status_banner_ = "Active source: " + srcList[i].name;
+                    fetchPopular();
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
             }
         }
 
-        // Action button: Rescan Extension Catalog
-        int infoY = start_y + static_cast<int>(srcList.size()) * (card_h + 15) + 20;
-        int boxY = infoY + 45;
-        int btnY = boxY + 180;
-        if (x >= 40 && x <= SCREEN_W - 40 && y >= btnY && y <= btnY + 70) {
-            status_banner_ = "Extension catalog up to date (MangaDex, MangaFox, MangaKatana).";
+        // Bottom button "+ Browse Available Extensions"
+        int btnY = startY + std::min(static_cast<int>(srcList.size()), maxVisible) * (cardH + 12) + 20;
+        if (y >= btnY && y <= btnY + 70 && x >= 35 && x <= SCREEN_W - 35) {
+            sources_sub_tab_ = SourcesSubTab::AVAILABLE;
+            if (!available_sources_loaded_) {
+                status_banner_ = "Fetching extensions from repository...";
+                renderSources();
+                display_.refreshFull(WAVEFORM_GC16);
+                std::string err;
+                available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
+                available_sources_loaded_ = true;
+                if (!err.empty()) status_banner_ = "Repository error: " + err;
+                else status_banner_.clear();
+            }
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+    }
+
+    void handleAvailableSourcesTouch(int x, int y, int startY) {
+        if (!available_sources_loaded_ || available_aidoku_sources_.empty()) {
+            if (y >= startY + 90 && y <= startY + 175) {
+                status_banner_ = "Fetching extensions from repository...";
+                renderSources();
+                display_.refreshFull(WAVEFORM_GC16);
+                std::string err;
+                available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
+                available_sources_loaded_ = true;
+                if (!err.empty()) status_banner_ = "Repository error: " + err;
+                else status_banner_ = "✓ Loaded " + std::to_string(available_aidoku_sources_.size()) + " available extensions";
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
+            return;
+        }
+
+        int totalItems = static_cast<int>(available_aidoku_sources_.size());
+        int totalPages = (totalItems + AVAILABLE_PER_PAGE - 1) / AVAILABLE_PER_PAGE;
+        int headerY = startY;
+
+        // Refresh list button
+        if (x >= 25 && x <= 285 && y >= headerY && y <= headerY + 55) {
+            status_banner_ = "Refreshing extensions from repository...";
+            renderSources();
+            display_.refreshFull(WAVEFORM_GC16);
+            std::string err;
+            available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
+            available_sources_loaded_ = true;
+            if (!err.empty()) status_banner_ = "Repository error: " + err;
+            else status_banner_ = "✓ Catalog refreshed (" + std::to_string(available_aidoku_sources_.size()) + " extensions)";
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        // Prev page button
+        if (totalPages > 1 && x >= SCREEN_W - 320 && x <= SCREEN_W - 180 && y >= headerY && y <= headerY + 55) {
+            if (available_sources_page_ > 0) {
+                available_sources_page_--;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
+            return;
+        }
+
+        // Next page button
+        if (totalPages > 1 && x >= SCREEN_W - 165 && x <= SCREEN_W - 25 && y >= headerY && y <= headerY + 55) {
+            if (available_sources_page_ + 1 < totalPages) {
+                available_sources_page_++;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
+            return;
+        }
+
+        // Available items list
+        int listStartY = headerY + 65;
+        int cardH = 115;
+        int startIdx = available_sources_page_ * AVAILABLE_PER_PAGE;
+        int endIdx = std::min(totalItems, startIdx + AVAILABLE_PER_PAGE);
+
+        for (int i = startIdx; i < endIdx; ++i) {
+            int cy = listStartY + (i - startIdx) * (cardH + 10);
+            if (y >= cy && y <= cy + cardH) {
+                const auto& s = available_aidoku_sources_[i];
+                if (!s.is_installed && x >= SCREEN_W - 200) {
+                    status_banner_ = "Installing " + s.name + "...";
+                    renderSources();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    std::string err;
+                    if (sources_.installAidokuSource(s.id, &err)) {
+                        status_banner_ = "✓ Successfully installed " + s.name;
+                        available_aidoku_sources_[i].is_installed = true;
+                    } else {
+                        status_banner_ = "Install error: " + err;
+                    }
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+            }
+        }
+    }
+
+    void handleRepositoriesTouch(int x, int y, int startY) {
+        Json::Value cfg = sources_.getSourceConfig();
+        const auto& sl = cfg["source_lists"].asArray();
+        int curY = startY + 45;
+
+        for (size_t i = 0; i < sl.size(); ++i) {
+            std::string url = sl[i].str();
+            if (y >= curY && y <= curY + 75) {
+                // Tapped remove button
+                if (x >= SCREEN_W - 190 && x <= SCREEN_W - 40) {
+                    status_banner_ = "Removing repository...";
+                    renderSources();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    std::string err;
+                    sources_.removeSourceListUrl(url, &err);
+                    available_sources_loaded_ = false;
+                    status_banner_ = "Removed repository URL.";
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+            }
+            curY += 88;
+            if (curY > SCREEN_H - NAV_H - 400) break;
+        }
+
+        int inputY = curY + 15;
+        int boxY = inputY + 30;
+        int boxW = SCREEN_W - 270;
+        int boxH = 65;
+
+        // Tapped input box -> open keyboard
+        if (x >= 25 && x <= 25 + boxW && y >= boxY && y <= boxY + boxH) {
+            kb_target_ = KeyboardTarget::REPO_URL;
+            show_keyboard_ = true;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        // Tapped "+ Add URL" button
+        if (x >= SCREEN_W - 225 && x <= SCREEN_W - 40 && y >= boxY && y <= boxY + boxH) {
+            if (!repo_url_input_.empty()) {
+                status_banner_ = "Adding repository URL...";
+                show_keyboard_ = false;
+                renderSources();
+                display_.refreshFull(WAVEFORM_GC16);
+                std::string err;
+                if (sources_.addSourceListUrl(repo_url_input_, &err)) {
+                    status_banner_ = "✓ Added repository! Fetching catalog...";
+                    repo_url_input_.clear();
+                    available_sources_loaded_ = false;
+                    available_aidoku_sources_ = sources_.getAvailableAidokuSources();
+                    available_sources_loaded_ = true;
+                } else {
+                    status_banner_ = "Failed: " + err;
+                }
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
+            return;
+        }
+
+        // Quick Add Aidoku Community button
+        int btnRowY = boxY + boxH + 20;
+        if (x >= 25 && x <= SCREEN_W - 25 && y >= btnRowY && y <= btnRowY + 65) {
+            status_banner_ = "Adding Aidoku Community repository...";
+            renderSources();
+            display_.refreshFull(WAVEFORM_GC16);
+            std::string err;
+            std::string officialUrl = "https://raw.githubusercontent.com/Aidoku-Community/Aidoku-Community/main/index.min.json";
+            if (sources_.addSourceListUrl(officialUrl, &err)) {
+                status_banner_ = "✓ Added Aidoku Community repository!";
+                available_sources_loaded_ = false;
+                available_aidoku_sources_ = sources_.getAvailableAidokuSources();
+                available_sources_loaded_ = true;
+            } else {
+                status_banner_ = "Failed: " + err;
+            }
             renderAll();
             display_.refreshFull(WAVEFORM_GC16);
             return;
@@ -1182,6 +1454,10 @@ private:
         std::string srcId = ch.source_id.empty() ? selected_manga_.source_id : ch.source_id;
         ch.source_id = srcId;
 
+        bool alreadyCbz = false;
+        std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+        fs::path cbzFile = destDir / (safeCh + ".cbz");
+
         if (srcId == "mangafox" || srcId == "mangakatana") {
             std::vector<std::string> pageUrls = sources_.getChapterPageUrls(ch, &err);
             if (pageUrls.empty() || shutting_down_.load()) {
@@ -1205,6 +1481,28 @@ private:
                 }
             }
             ok = (downloaded > 0);
+        } else if (sources_.isAidokuSource(srcId)) {
+            preload_pct_ = 25;
+            double num = -1.0;
+            bool hasNum = false;
+            if (!ch.chapterNum.empty()) {
+                char* end = nullptr;
+                num = std::strtod(ch.chapterNum.c_str(), &end);
+                hasNum = (end != ch.chapterNum.c_str());
+            }
+            std::string downloadedCbz = sources_.downloadAidokuChapter(
+                srcId, selected_manga_.id, ch.id, num, hasNum, &shutting_down_,
+                [this](const std::string& msg) {
+                    preload_pct_ = 50;
+                }, &err);
+            if (!downloadedCbz.empty() && fs::exists(downloadedCbz, ec)) {
+                fs::create_directories(destDir, ec);
+                fs::copy_file(downloadedCbz, cbzFile, fs::copy_options::overwrite_existing, ec);
+                ok = true;
+                alreadyCbz = true;
+            } else {
+                ok = false;
+            }
         } else {
             // MangaDex
             ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
@@ -1216,52 +1514,45 @@ private:
         if (ok && !shutting_down_.load()) {
             preload_pct_ = 90;
             fs::create_directories(destDir, ec);
-            std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
-            fs::path cbzFile = destDir / (safeCh + ".cbz");
 
-            ZipStoreWriter zip;
-            if (zip.open(cbzFile.string())) {
-                std::vector<fs::path> pageFiles;
-                for (const auto& entry : fs::directory_iterator(tmpExtract, ec)) {
-                    if (entry.is_regular_file(ec)) {
-                        pageFiles.push_back(entry.path());
+            if (!alreadyCbz) {
+                ZipStoreWriter zip;
+                if (zip.open(cbzFile.string())) {
+                    std::vector<fs::path> pageFiles;
+                    for (const auto& entry : fs::directory_iterator(tmpExtract, ec)) {
+                        if (entry.is_regular_file(ec)) {
+                            pageFiles.push_back(entry.path());
+                        }
                     }
-                }
-                std::sort(pageFiles.begin(), pageFiles.end(), [](const fs::path& a, const fs::path& b) {
-                    return util::naturalLess(a.filename().string(), b.filename().string());
-                });
+                    std::sort(pageFiles.begin(), pageFiles.end(), [](const fs::path& a, const fs::path& b) {
+                        return util::naturalLess(a.filename().string(), b.filename().string());
+                    });
 
-                for (const auto& pf : pageFiles) {
-                    std::string bytes;
-                    if (util::readFileToString(pf, bytes)) {
-                        std::vector<uint8_t> vec(bytes.begin(), bytes.end());
-                        zip.add(pf.filename().string(), vec);
+                    for (const auto& pf : pageFiles) {
+                        std::string bytes;
+                        if (util::readFileToString(pf, bytes)) {
+                            std::vector<uint8_t> vec(bytes.begin(), bytes.end());
+                            zip.add(pf.filename().string(), vec);
+                        }
                     }
+                    zip.close();
                 }
-                zip.close();
-                fs::remove_all(tmpExtract, ec);
-
-                // Save first page as cover if missing
-                fs::path coverFile = destDir / "cover.jpg";
-                if (!fs::exists(coverFile, ec) && !pageFiles.empty()) {
-                    fs::copy_file(pageFiles[0], coverFile, ec);
-                }
-
-                // Update in-memory chapter state
-                ch.isDownloaded = true;
-                ch.localPath = cbzFile.string();
-                {
-                    std::lock_guard<std::mutex> lock(chapters_mu_);
-                    if (chIdx < static_cast<int>(selected_chapters_.size())) {
-                        selected_chapters_[chIdx] = ch;
-                    }
-                }
-
-                // Pre-extract into page cache so it's instantly decoded
-                std::set<std::string> pinned;
-                page_cache_.extractCbz(ch.id.empty() ? ch.title : ch.id, cbzFile, pinned, &err);
-                preload_pct_ = 100;
             }
+
+            // Update in-memory chapter state
+            ch.isDownloaded = true;
+            ch.localPath = cbzFile.string();
+            {
+                std::lock_guard<std::mutex> lock(chapters_mu_);
+                if (chIdx < static_cast<int>(selected_chapters_.size())) {
+                    selected_chapters_[chIdx] = ch;
+                }
+            }
+
+            // Pre-extract into page cache so it's instantly decoded
+            std::set<std::string> pinned;
+            page_cache_.extractCbz(ch.id.empty() ? ch.title : ch.id, cbzFile, pinned, &err);
+            preload_pct_ = 100;
         }
         fs::remove_all(tmpExtract, ec);
     }
@@ -1443,6 +1734,7 @@ private:
         std::atomic<bool> cancel{false};
         std::string err;
         bool ok = false;
+        bool alreadyCbz = false;
 
         if (ch.source_id == "mangafox" || ch.source_id == "mangakatana") {
             updateDownloadProgress("Fetching page list from " + ch.source_id + "...", 10);
@@ -1473,6 +1765,31 @@ private:
             }
             ok = (downloaded > 0);
             if (!ok && err.empty()) err = "Failed downloading pages";
+        } else if (sources_.isAidokuSource(ch.source_id)) {
+            updateDownloadProgress("Downloading from " + ch.source_id + "...", 15);
+            double num = -1.0;
+            bool hasNum = false;
+            if (!ch.chapterNum.empty()) {
+                char* end = nullptr;
+                num = std::strtod(ch.chapterNum.c_str(), &end);
+                hasNum = (end != ch.chapterNum.c_str());
+            }
+            std::string downloadedCbz = sources_.downloadAidokuChapter(
+                ch.source_id, selected_manga_.id, ch.id, num, hasNum, &cancel,
+                [this](const std::string& msg) {
+                    updateDownloadProgress(msg, 50);
+                }, &err);
+            std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+            fs::path cbzFile = destDir / (safeCh + ".cbz");
+            if (!downloadedCbz.empty() && fs::exists(downloadedCbz, ec)) {
+                fs::create_directories(destDir, ec);
+                fs::copy_file(downloadedCbz, cbzFile, fs::copy_options::overwrite_existing, ec);
+                ok = true;
+                alreadyCbz = true;
+            } else {
+                ok = false;
+                if (err.empty()) err = "Aidoku download failed";
+            }
         } else {
             // MangaDex
             ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
@@ -1482,41 +1799,49 @@ private:
         }
 
         if (ok) {
-            updateDownloadProgress("Packing CBZ archive...", 90);
-
-            std::error_code ec;
-            fs::create_directories(destDir, ec);
             std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
             fs::path cbzFile = destDir / (safeCh + ".cbz");
+            bool archiveOk = true;
 
-            ZipStoreWriter zip;
-            if (zip.open(cbzFile.string())) {
-                std::vector<fs::path> pageFiles;
-                for (const auto& entry : fs::directory_iterator(tmpExtract, ec)) {
-                    if (entry.is_regular_file(ec)) {
-                        pageFiles.push_back(entry.path());
+            if (!alreadyCbz) {
+                updateDownloadProgress("Packing CBZ archive...", 90);
+
+                std::error_code ec;
+                fs::create_directories(destDir, ec);
+
+                ZipStoreWriter zip;
+                if (zip.open(cbzFile.string())) {
+                    std::vector<fs::path> pageFiles;
+                    for (const auto& entry : fs::directory_iterator(tmpExtract, ec)) {
+                        if (entry.is_regular_file(ec)) {
+                            pageFiles.push_back(entry.path());
+                        }
                     }
-                }
-                std::sort(pageFiles.begin(), pageFiles.end(), [](const fs::path& a, const fs::path& b) {
-                    return util::naturalLess(a.filename().string(), b.filename().string());
-                });
+                    std::sort(pageFiles.begin(), pageFiles.end(), [](const fs::path& a, const fs::path& b) {
+                        return util::naturalLess(a.filename().string(), b.filename().string());
+                    });
 
-                for (const auto& pf : pageFiles) {
-                    std::string bytes;
-                    if (util::readFileToString(pf, bytes)) {
-                        std::vector<uint8_t> vec(bytes.begin(), bytes.end());
-                        zip.add(pf.filename().string(), vec);
+                    for (const auto& pf : pageFiles) {
+                        std::string bytes;
+                        if (util::readFileToString(pf, bytes)) {
+                            std::vector<uint8_t> vec(bytes.begin(), bytes.end());
+                            zip.add(pf.filename().string(), vec);
+                        }
                     }
-                }
-                zip.close();
-                fs::remove_all(tmpExtract, ec);
+                    zip.close();
 
-                // Also save first page as cover if missing
-                fs::path coverFile = destDir / "cover.jpg";
-                if (!fs::exists(coverFile, ec) && !pageFiles.empty()) {
-                    fs::copy_file(pageFiles[0], coverFile, ec);
+                    // Also save first page as cover if missing
+                    fs::path coverFile = destDir / "cover.jpg";
+                    if (!fs::exists(coverFile, ec) && !pageFiles.empty()) {
+                        fs::copy_file(pageFiles[0], coverFile, ec);
+                    }
+                } else {
+                    archiveOk = false;
                 }
+            }
+            fs::remove_all(tmpExtract, ec);
 
+            if (archiveOk) {
                 download_active_ = false;
                 ch.isDownloaded = true;
                 ch.localPath = cbzFile.string();
@@ -1690,7 +2015,17 @@ private:
         font_.drawText(canvas_, tx, ty, label, fontSize, fg, true);
     }
 
+    std::string& getActiveInputText() {
+        return (kb_target_ == KeyboardTarget::REPO_URL) ? repo_url_input_ : search_query_;
+    }
+
     void renderSearchBarInput() {
+        if (kb_target_ == KeyboardTarget::REPO_URL) {
+            renderSources();
+            display_.update(0, 0, SCREEN_W, KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+            return;
+        }
+
         int sb_x = 20;
         int sb_y = 15;
         int sb_w = SCREEN_W - 500;
@@ -1715,6 +2050,7 @@ private:
         if (row < 0 || row > 3) return;
 
         bool updated_keyboard = false;
+        std::string& activeInput = getActiveInputText();
 
         if (row == 0) {
             // Row 0 (10 keys: 26 + k * 122)
@@ -1723,11 +2059,11 @@ private:
             if (col >= 0 && col < 10 && rel < KB_KEY_W) {
                 if (kb_symbols_mode_) {
                     const char sym0[] = "1234567890";
-                    search_query_ += sym0[col];
+                    activeInput += sym0[col];
                 } else {
                     const char low0[] = "qwertyuiop";
                     const char up0[] = "QWERTYUIOP";
-                    search_query_ += (kb_shift_active_ ? up0[col] : low0[col]);
+                    activeInput += (kb_shift_active_ ? up0[col] : low0[col]);
                     if (kb_shift_active_) {
                         kb_shift_active_ = false;
                         updated_keyboard = true;
@@ -1747,11 +2083,11 @@ private:
             if (col >= 0 && col < 9 && rel >= 0 && rel < KB_KEY_W) {
                 if (kb_symbols_mode_) {
                     const char sym1[] = "-/:;()$&@";
-                    search_query_ += sym1[col];
+                    activeInput += sym1[col];
                 } else {
                     const char low1[] = "asdfghjkl";
                     const char up1[] = "ASDFGHJKL";
-                    search_query_ += (kb_shift_active_ ? up1[col] : low1[col]);
+                    activeInput += (kb_shift_active_ ? up1[col] : low1[col]);
                     if (kb_shift_active_) {
                         kb_shift_active_ = false;
                         updated_keyboard = true;
@@ -1774,8 +2110,8 @@ private:
                 return;
             } else if (x >= 1063 && x < 1238) {
                 // Backspace
-                if (!search_query_.empty()) {
-                    search_query_.pop_back();
+                if (!activeInput.empty()) {
+                    activeInput.pop_back();
                     renderSearchBarInput();
                 }
                 return;
@@ -1785,11 +2121,11 @@ private:
                 if (col >= 0 && col < 7 && rel < KB_KEY_W) {
                     if (kb_symbols_mode_) {
                         const char sym2[] = ".,?!'\"_";
-                        search_query_ += sym2[col];
+                        activeInput += sym2[col];
                     } else {
                         const char low2[] = "zxcvbnm";
                         const char up2[] = "ZXCVBNM";
-                        search_query_ += (kb_shift_active_ ? up2[col] : low2[col]);
+                        activeInput += (kb_shift_active_ ? up2[col] : low2[col]);
                         if (kb_shift_active_) {
                             kb_shift_active_ = false;
                             updated_keyboard = true;
@@ -1804,7 +2140,7 @@ private:
                 }
             }
         } else if (row == 3) {
-            // Row 3: ?123 / ABC (26..201), Close (209..359), Space (367..1048), Search (1056..1238)
+            // Row 3: ?123 / ABC (26..201), Close (209..359), Space (367..1048), Search/Done (1056..1238)
             if (x >= 26 && x < 201) {
                 // Symbols / ABC toggle
                 kb_symbols_mode_ = !kb_symbols_mode_;
@@ -1819,12 +2155,33 @@ private:
                 return;
             } else if (x >= 367 && x < 1048) {
                 // Space
-                search_query_ += " ";
+                activeInput += " ";
                 renderSearchBarInput();
                 return;
             } else if (x >= 1056 && x < 1238) {
-                // Search
+                // Done or Search
                 show_keyboard_ = false;
+                if (kb_target_ == KeyboardTarget::REPO_URL) {
+                    if (!repo_url_input_.empty()) {
+                        status_banner_ = "Adding repository URL...";
+                        renderSources();
+                        display_.refreshFull(WAVEFORM_GC16);
+                        std::string err;
+                        if (sources_.addSourceListUrl(repo_url_input_, &err)) {
+                            status_banner_ = "✓ Added repository! Fetching catalog...";
+                            repo_url_input_.clear();
+                            available_sources_loaded_ = false;
+                            available_aidoku_sources_ = sources_.getAvailableAidokuSources();
+                            available_sources_loaded_ = true;
+                        } else {
+                            status_banner_ = "Failed: " + err;
+                        }
+                    }
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
                 } else {
@@ -2140,49 +2497,193 @@ private:
         font_.drawButton(canvas_, SCREEN_W - 320, 15, 150, 50, "< Browse", true, 22);
         font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
-        if (!status_banner_.empty()) {
-            font_.drawText(canvas_, 35, TOP_H + 12, status_banner_, 22, 0x00, true);
-        }
-
-        int start_y = TOP_H + 35;
-        int card_h = 130;
+        // Sub-navigation tabs: Y = 75 to 135
+        int tabY = 75;
+        int tabH = 55;
         const auto& srcList = sources_.getSources();
 
-        for (size_t i = 0; i < srcList.size(); ++i) {
-            int cy = start_y + static_cast<int>(i) * (card_h + 15);
+        std::string instTabTitle = "Installed (" + std::to_string(srcList.size()) + ")";
+        std::string availTabTitle = available_sources_loaded_
+            ? ("Available (" + std::to_string(available_aidoku_sources_.size()) + ")")
+            : "Available Repos";
+        std::string repoTabTitle = "Source Lists";
+
+        bool isInstTab = (sources_sub_tab_ == SourcesSubTab::INSTALLED);
+        bool isAvailTab = (sources_sub_tab_ == SourcesSubTab::AVAILABLE);
+        bool isRepoTab = (sources_sub_tab_ == SourcesSubTab::REPOSITORIES);
+
+        font_.drawButton(canvas_, 25, tabY, 390, tabH, instTabTitle, isInstTab, 22);
+        font_.drawButton(canvas_, 435, tabY, 390, tabH, availTabTitle, isAvailTab, 22);
+        font_.drawButton(canvas_, 845, tabY, 390, tabH, repoTabTitle, isRepoTab, 22);
+
+        canvas_.drawHLine(0, tabY + tabH + 10, SCREEN_W, 0x00, 2);
+
+        if (!status_banner_.empty()) {
+            font_.drawText(canvas_, 35, tabY + tabH + 18, status_banner_, 22, 0x00, true);
+        }
+
+        int contentY = tabY + tabH + 48;
+
+        if (sources_sub_tab_ == SourcesSubTab::INSTALLED) {
+            renderInstalledSourcesTab(contentY);
+        } else if (sources_sub_tab_ == SourcesSubTab::AVAILABLE) {
+            renderAvailableSourcesTab(contentY);
+        } else if (sources_sub_tab_ == SourcesSubTab::REPOSITORIES) {
+            renderRepositoriesTab(contentY);
+        }
+    }
+
+    void renderInstalledSourcesTab(int startY) {
+        const auto& srcList = sources_.getSources();
+        int cardH = 120;
+        int maxVisible = 6;
+        for (size_t i = 0; i < srcList.size() && static_cast<int>(i) < maxVisible; ++i) {
+            int cy = startY + static_cast<int>(i) * (cardH + 12);
             bool isActive = (srcList[i].id == sources_.getActiveSourceId());
 
-            canvas_.drawRect(25, cy, SCREEN_W - 50, card_h, 0x00, 2);
+            canvas_.drawRect(25, cy, SCREEN_W - 50, cardH, 0x00, 2);
             if (isActive) {
-                canvas_.fillRect(27, cy + 2, 8, card_h - 4, 0x00);
+                canvas_.fillRect(27, cy + 2, 8, cardH - 4, 0x00);
             }
 
-            font_.drawText(canvas_, 45, cy + 22, srcList[i].name, 30, 0x00, true);
-            font_.drawText(canvas_, 45, cy + 62, srcList[i].description, 22, 0x60, false);
-            font_.drawText(canvas_, 45, cy + 92, "Status: Online | Protocol: HTTPS Modern TLS", 20, 0x80, false);
+            font_.drawText(canvas_, 45, cy + 18, srcList[i].name, 28, 0x00, true);
+            std::string meta = srcList[i].id + " | v" + srcList[i].version + " | Lang: " + srcList[i].language +
+                               " | " + (srcList[i].is_aidoku ? "Aidoku WASM" : "Native C++");
+            font_.drawText(canvas_, 45, cy + 54, meta, 20, 0x60, false);
+            std::string desc = srcList[i].description;
+            if (desc.size() > 60) desc = desc.substr(0, 58) + "...";
+            font_.drawText(canvas_, 45, cy + 82, desc.empty() ? "Online source" : desc, 19, 0x80, false);
 
             if (isActive) {
-                font_.drawButton(canvas_, SCREEN_W - 230, cy + 35, 180, 60, "✓ Active", true, 22);
+                font_.drawButton(canvas_, SCREEN_W - 200, cy + 30, 150, 58, "✓ Active", true, 22);
             } else {
-                font_.drawButton(canvas_, SCREEN_W - 230, cy + 35, 180, 60, "Select", false, 22);
+                font_.drawButton(canvas_, SCREEN_W - 200, cy + 30, 150, 58, "Select", false, 22);
+            }
+
+            if (srcList[i].is_aidoku) {
+                font_.drawButton(canvas_, SCREEN_W - 365, cy + 30, 150, 58, "Uninstall", false, 20);
             }
         }
 
-        int infoY = start_y + static_cast<int>(srcList.size()) * (card_h + 15) + 20;
-        font_.drawText(canvas_, 35, infoY, "CUSTOM EXTENSIONS & SOURCE REPOSITORIES", 22, 0x50, true);
-        canvas_.drawHLine(35, infoY + 30, SCREEN_W - 70, 0x00, 2);
+        int btnY = startY + std::min(static_cast<int>(srcList.size()), maxVisible) * (cardH + 12) + 20;
+        if (btnY < SCREEN_H - NAV_H - 85) {
+            font_.drawButton(canvas_, 35, btnY, SCREEN_W - 70, 65, "+ Browse & Install Community Extensions", false, 24);
+        }
+    }
 
-        int boxY = infoY + 45;
-        canvas_.drawRect(25, boxY, SCREEN_W - 50, 160, 0x00, 2);
-        canvas_.fillRect(26, boxY + 1, SCREEN_W - 52, 158, 0xF9);
+    void renderAvailableSourcesTab(int startY) {
+        if (!available_sources_loaded_) {
+            font_.drawText(canvas_, 45, startY + 40, "Loading available extensions from configured repositories...", 24, 0x40, false);
+            font_.drawButton(canvas_, 35, startY + 100, SCREEN_W - 70, 65, "↻ Fetch Extensions Catalog", true, 24);
+            return;
+        }
 
-        font_.drawText(canvas_, 45, boxY + 20, "Active Index: Aidoku Community & rm2manga Official", 24, 0x00, true);
-        font_.drawText(canvas_, 45, boxY + 55, "Repository: https://raw.githubusercontent.com/Aidoku-Community/", 20, 0x50, false);
-        font_.drawText(canvas_, 45, boxY + 85, "Sources Loaded: MangaDex v5, MangaFox (FanFox/MangaHere), MangaKatana", 20, 0x50, false);
-        font_.drawText(canvas_, 45, boxY + 115, "Languages: English (en) [Default]", 20, 0x50, false);
+        if (available_aidoku_sources_.empty()) {
+            font_.drawText(canvas_, 45, startY + 40, "No extensions found in the configured repositories.", 24, 0x00, true);
+            font_.drawText(canvas_, 45, startY + 80, "Check 'Source Lists' tab to add or verify repository index URLs.", 20, 0x60, false);
+            font_.drawButton(canvas_, 35, startY + 140, SCREEN_W - 70, 65, "↻ Refresh Extensions Catalog", true, 24);
+            return;
+        }
 
-        int btnY = boxY + 180;
-        font_.drawButton(canvas_, 40, btnY, SCREEN_W - 80, 65, "↻ Rescan & Refresh Extension Catalog", false, 24);
+        // Action header row: Refresh button and page controls
+        int totalItems = static_cast<int>(available_aidoku_sources_.size());
+        int totalPages = (totalItems + AVAILABLE_PER_PAGE - 1) / AVAILABLE_PER_PAGE;
+        if (available_sources_page_ >= totalPages) available_sources_page_ = std::max(0, totalPages - 1);
+
+        int headerY = startY;
+        font_.drawButton(canvas_, 25, headerY, 260, 50, "↻ Refresh List", false, 20);
+
+        std::string pageInfo = "Page " + std::to_string(available_sources_page_ + 1) + " of " +
+                               std::to_string(totalPages) + " (" + std::to_string(totalItems) + " extensions)";
+        font_.drawText(canvas_, 310, headerY + 15, pageInfo, 22, 0x30, true);
+
+        if (totalPages > 1) {
+            font_.drawButton(canvas_, SCREEN_W - 320, headerY, 140, 50, "< Prev", false, 20);
+            font_.drawButton(canvas_, SCREEN_W - 165, headerY, 140, 50, "Next >", false, 20);
+        }
+
+        int listStartY = headerY + 65;
+        int cardH = 115;
+        int startIdx = available_sources_page_ * AVAILABLE_PER_PAGE;
+        int endIdx = std::min(totalItems, startIdx + AVAILABLE_PER_PAGE);
+
+        for (int i = startIdx; i < endIdx; ++i) {
+            const auto& s = available_aidoku_sources_[i];
+            int cy = listStartY + (i - startIdx) * (cardH + 10);
+
+            canvas_.drawRect(25, cy, SCREEN_W - 50, cardH, 0x00, 2);
+            font_.drawText(canvas_, 45, cy + 18, s.name, 28, 0x00, true);
+            std::string meta = s.id + " | v" + s.version + " | Lang: " + s.language;
+            font_.drawText(canvas_, 45, cy + 54, meta, 20, 0x60, false);
+            std::string desc = s.description;
+            if (desc.size() > 60) desc = desc.substr(0, 58) + "...";
+            font_.drawText(canvas_, 45, cy + 82, desc.empty() ? "Community Aidoku extension" : desc, 19, 0x80, false);
+
+            if (s.is_installed) {
+                font_.drawButton(canvas_, SCREEN_W - 200, cy + 28, 150, 58, "✓ Installed", false, 20);
+            } else {
+                font_.drawButton(canvas_, SCREEN_W - 200, cy + 28, 150, 58, "+ Install", true, 22);
+            }
+        }
+    }
+
+    void renderRepositoriesTab(int startY) {
+        font_.drawText(canvas_, 35, startY, "AIDOKU REPOSITORY SOURCE LISTS (settings.json)", 24, 0x00, true);
+        canvas_.drawHLine(35, startY + 30, SCREEN_W - 70, 0x00, 2);
+
+        Json::Value cfg = sources_.getSourceConfig();
+        const auto& sl = cfg["source_lists"].asArray();
+
+        int curY = startY + 45;
+        if (sl.empty()) {
+            canvas_.drawRect(25, curY, SCREEN_W - 50, 80, 0x00, 2);
+            canvas_.fillRect(26, curY + 1, SCREEN_W - 52, 78, 0xF9);
+            font_.drawText(canvas_, 45, curY + 28, "No repository URLs configured yet.", 22, 0x40, false);
+            curY += 95;
+        } else {
+            for (size_t i = 0; i < sl.size(); ++i) {
+                std::string url = sl[i].str();
+                canvas_.drawRect(25, curY, SCREEN_W - 50, 75, 0x00, 2);
+                canvas_.fillRect(26, curY + 1, SCREEN_W - 52, 73, 0xF9);
+
+                std::string dispUrl = url;
+                if (dispUrl.size() > 65) dispUrl = dispUrl.substr(0, 62) + "...";
+                font_.drawText(canvas_, 45, curY + 26, dispUrl, 20, 0x00, false);
+
+                font_.drawButton(canvas_, SCREEN_W - 190, curY + 12, 140, 50, "Remove", false, 20);
+                curY += 88;
+                if (curY > SCREEN_H - NAV_H - 400) break;
+            }
+        }
+
+        // Add URL Input Row
+        int inputY = curY + 15;
+        font_.drawText(canvas_, 35, inputY, "Add New Repository Index URL:", 22, 0x00, true);
+
+        int boxY = inputY + 30;
+        int boxW = SCREEN_W - 270;
+        int boxH = 65;
+        canvas_.drawRect(25, boxY, boxW, boxH, 0x00, (kb_target_ == KeyboardTarget::REPO_URL && show_keyboard_) ? 3 : 2);
+        canvas_.fillRect(26, boxY + 1, boxW - 2, boxH - 2, 0xFF);
+
+        std::string inputDisp = repo_url_input_.empty()
+            ? ((kb_target_ == KeyboardTarget::REPO_URL && show_keyboard_) ? "_" : "Tap here to enter repository URL (e.g. index.min.json)...")
+            : (repo_url_input_ + ((kb_target_ == KeyboardTarget::REPO_URL && show_keyboard_) ? "_" : ""));
+        font_.drawText(canvas_, 45, boxY + 20, inputDisp, 20, (repo_url_input_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
+
+        font_.drawButton(canvas_, SCREEN_W - 225, boxY, 175, boxH, "+ Add URL", true, 22);
+
+        // Pre-set button for Aidoku Community
+        int btnRowY = boxY + boxH + 20;
+        font_.drawButton(canvas_, 25, btnRowY, SCREEN_W - 50, 60, "+ Quick Add Official Aidoku-Community Repository", false, 22);
+
+        // Tip note box
+        int tipY = btnRowY + 80;
+        canvas_.drawRect(25, tipY, SCREEN_W - 50, 110, 0x00, 1);
+        canvas_.fillRect(26, tipY + 1, SCREEN_W - 52, 108, 0xF5);
+        font_.drawText(canvas_, 45, tipY + 20, "Tip: You can also edit settings.json directly over SSH or USB at:", 20, 0x00, true);
+        font_.drawText(canvas_, 45, tipY + 50, "/mnt/us/manga/data/aidoku/settings.json", 20, 0x50, false);
+        font_.drawText(canvas_, 45, tipY + 75, "Languages: [\"en\"] | Schema: https://github.com/hanatsumi/rakuyomi", 18, 0x70, false);
     }
 
     void renderDetail() {
@@ -2557,7 +3058,8 @@ private:
         renderKey(26, y3, 175, KB_KEY_H, kb_symbols_mode_ ? "ABC" : "?123", kb_symbols_mode_, !kb_symbols_mode_, 26);
         renderKey(209, y3, 150, KB_KEY_H, "Close", false, true, 24);
         renderKey(367, y3, 681, KB_KEY_H, "space", false, false, 24);
-        renderKey(1056, y3, 182, KB_KEY_H, "Search", true, false, 26);
+        std::string actionLabel = (kb_target_ == KeyboardTarget::REPO_URL) ? "Done" : "Search";
+        renderKey(1056, y3, 182, KB_KEY_H, actionLabel, true, false, 26);
     }
 
     void renderBottomNav() {

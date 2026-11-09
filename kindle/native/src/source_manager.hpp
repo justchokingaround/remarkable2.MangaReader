@@ -2,6 +2,7 @@
 
 #include "types.hpp"
 #include "../../../backend/src/mangadex_client.hpp"
+#include "../../../backend/src/aidoku_client.hpp"
 #include "../../../backend/src/json.hpp"
 #include "../../../backend/src/util.hpp"
 #include <string>
@@ -14,19 +15,133 @@ namespace kindle {
 class SourceManager {
 private:
     mangadex::Client mangadex_client_;
+    aidoku::Client aidoku_client_;
     std::string active_source_id_ = "mangadex";
     std::vector<SourceInfo> available_sources_;
 
 public:
-    SourceManager() {
-        available_sources_.push_back({"mangadex", "MangaDex", "Official API (Multi-language)"});
-        available_sources_.push_back({"mangafox", "MangaFox", "FanFox & MangaHere (English)"});
-        available_sources_.push_back({"mangakatana", "MangaKatana", "Fast Scans (English)"});
+    SourceManager() : aidoku_client_("/mnt/us/manga/data/aidoku") {
+        refreshSources();
+    }
+
+    void refreshSources() {
+        available_sources_.clear();
+        available_sources_.push_back({"mangadex", "MangaDex", "Official API (Multi-language)", true, false, "v5", "all"});
+        available_sources_.push_back({"mangafox", "MangaFox", "FanFox & MangaHere (English)", true, false, "v1", "en"});
+        available_sources_.push_back({"mangakatana", "MangaKatana", "Fast Scans (English)", true, false, "v1", "en"});
+
+        if (aidoku_client_.ensureRunning()) {
+            std::string err;
+            Json::Value installed = aidoku_client_.listInstalledSources(&err);
+            if (installed.isArray()) {
+                for (const auto& item : installed.asArray()) {
+                    SourceInfo s;
+                    s.id = item["id"].str();
+                    s.name = item["name"].str();
+                    s.description = item["description"].str();
+                    s.version = item["version"].str("1.0");
+                    s.language = item["language"].str(item["lang"].str("en"));
+                    s.is_installed = true;
+                    s.is_aidoku = true;
+                    available_sources_.push_back(s);
+                }
+            }
+        }
     }
 
     const std::vector<SourceInfo>& getSources() const { return available_sources_; }
     const std::string& getActiveSourceId() const { return active_source_id_; }
     void setActiveSourceId(const std::string& id) { active_source_id_ = id; }
+
+    bool isAidokuSource(const std::string& id) const {
+        if (id == "mangadex" || id == "mangafox" || id == "mangakatana") return false;
+        for (const auto& s : available_sources_) {
+            if (s.id == id) return s.is_aidoku;
+        }
+        return false;
+    }
+
+    aidoku::Client& aidokuClient() { return aidoku_client_; }
+
+    std::vector<SourceInfo> getAvailableAidokuSources(std::string* errOut = nullptr) {
+        std::vector<SourceInfo> list;
+        if (!aidoku_client_.ensureRunning()) {
+            if (errOut) *errOut = "Aidoku server not running";
+            return list;
+        }
+        Json::Value avail = aidoku_client_.listAvailableSources(errOut);
+        if (avail.isArray()) {
+            for (const auto& item : avail.asArray()) {
+                SourceInfo s;
+                s.id = item["id"].str();
+                s.name = item["name"].str();
+                s.description = item["description"].str();
+                s.version = item["version"].str("1.0");
+                s.language = item["language"].str(item["lang"].str("en"));
+                s.is_aidoku = true;
+                s.is_installed = false;
+                for (const auto& inst : available_sources_) {
+                    if (inst.id == s.id) {
+                        s.is_installed = true;
+                        break;
+                    }
+                }
+                list.push_back(s);
+            }
+        }
+        return list;
+    }
+
+    bool installAidokuSource(const std::string& sourceId, std::string* errOut = nullptr) {
+        bool ok = aidoku_client_.installSource(sourceId, errOut);
+        if (ok) refreshSources();
+        return ok;
+    }
+
+    bool uninstallAidokuSource(const std::string& sourceId, std::string* errOut = nullptr) {
+        bool ok = aidoku_client_.uninstallSource(sourceId, errOut);
+        if (active_source_id_ == sourceId) {
+            active_source_id_ = "mangadex";
+        }
+        refreshSources();
+        return ok;
+    }
+
+    Json::Value getSourceConfig() {
+        return aidoku_client_.getSourceConfig();
+    }
+
+    bool addSourceListUrl(const std::string& url, std::string* errOut = nullptr) {
+        Json::Value cfg = aidoku_client_.getSourceConfig();
+        Json::Value sl = cfg["source_lists"];
+        if (!sl.isArray()) sl = Json::Value::array();
+        bool exists = false;
+        for (const auto& u : sl.asArray()) {
+            if (u.str() == url) { exists = true; break; }
+        }
+        if (!exists) {
+            sl.push(url);
+            cfg["source_lists"] = sl;
+            bool ok = aidoku_client_.saveSourceConfig(cfg, errOut);
+            if (ok) aidoku_client_.restartServer();
+            return ok;
+        }
+        return true;
+    }
+
+    bool removeSourceListUrl(const std::string& url, std::string* errOut = nullptr) {
+        Json::Value cfg = aidoku_client_.getSourceConfig();
+        Json::Value sl = Json::Value::array();
+        if (cfg["source_lists"].isArray()) {
+            for (const auto& u : cfg["source_lists"].asArray()) {
+                if (u.str() != url) sl.push(u.str());
+            }
+        }
+        cfg["source_lists"] = sl;
+        bool ok = aidoku_client_.saveSourceConfig(cfg, errOut);
+        if (ok) aidoku_client_.restartServer();
+        return ok;
+    }
 
     std::vector<UnifiedManga> getPopular(std::string* errOut = nullptr) {
         if (active_source_id_ == "mangafox") {
@@ -35,8 +150,10 @@ public:
         if (active_source_id_ == "mangakatana") {
             return fetchMangaKatanaPopular(errOut);
         }
-        // Default to MangaDex
-        return fetchMangaDexPopular(errOut);
+        if (active_source_id_ == "mangadex") {
+            return fetchMangaDexPopular(errOut);
+        }
+        return fetchAidokuPopular(active_source_id_, errOut);
     }
 
     std::vector<UnifiedManga> search(const std::string& query, std::string* errOut = nullptr) {
@@ -46,7 +163,10 @@ public:
         if (active_source_id_ == "mangakatana") {
             return searchMangaKatana(query, errOut);
         }
-        return searchMangaDex(query, errOut);
+        if (active_source_id_ == "mangadex") {
+            return searchMangaDex(query, errOut);
+        }
+        return searchAidoku(active_source_id_, query, errOut);
     }
 
     std::vector<UnifiedChapter> getChapters(const std::string& mangaId, std::string* errOut = nullptr) {
@@ -56,7 +176,21 @@ public:
         if (active_source_id_ == "mangakatana") {
             return fetchMangaKatanaChapters(mangaId, errOut);
         }
-        return fetchMangaDexChapters(mangaId, errOut);
+        if (active_source_id_ == "mangadex") {
+            return fetchMangaDexChapters(mangaId, errOut);
+        }
+        return fetchAidokuChapters(active_source_id_, mangaId, errOut);
+    }
+
+    std::string downloadAidokuChapter(const std::string& sourceId,
+                                      const std::string& mangaId,
+                                      const std::string& chapterId,
+                                      double chapterNum,
+                                      bool hasChapterNum,
+                                      const std::atomic<bool>* cancelFlag,
+                                      const std::function<void(const std::string&)>& onStatus,
+                                      std::string* errOut = nullptr) {
+        return aidoku_client_.downloadChapter(sourceId, mangaId, chapterId, chapterNum, hasChapterNum, cancelFlag, onStatus, errOut);
     }
 
     mangadex::Client& mangadexClient() { return mangadex_client_; }
@@ -72,6 +206,81 @@ public:
     }
 
 private:
+    std::vector<UnifiedManga> fetchAidokuPopular(const std::string& sourceId, std::string* errOut) {
+        std::vector<UnifiedManga> results;
+        std::string aiErr;
+        Json::Value items = aidoku_client_.searchMangas("", &aiErr);
+        if (items.empty()) {
+            items = aidoku_client_.searchMangas("a", &aiErr);
+        }
+        if (items.isArray()) {
+            for (const auto& m : items.asArray()) {
+                std::string sid = m["source"]["id"].str(m["source_id"].str());
+                if (sid == sourceId) {
+                    UnifiedManga um;
+                    um.id = m["id"].str();
+                    um.title = m["title"].str();
+                    um.author = m["author"].str();
+                    um.description = m["description"].str();
+                    um.cover_url = m["cover_url"].str(m["cover"].str());
+                    um.source_id = sourceId;
+                    um.status = m["status"].str();
+                    results.push_back(um);
+                }
+            }
+        }
+        if (results.empty() && !aiErr.empty() && errOut) {
+            *errOut = aiErr;
+        }
+        return results;
+    }
+
+    std::vector<UnifiedManga> searchAidoku(const std::string& sourceId, const std::string& query, std::string* errOut) {
+        std::vector<UnifiedManga> results;
+        Json::Value items = aidoku_client_.searchMangas(query, errOut);
+        if (items.isArray()) {
+            for (const auto& m : items.asArray()) {
+                std::string sid = m["source"]["id"].str(m["source_id"].str());
+                if (sid == sourceId) {
+                    UnifiedManga um;
+                    um.id = m["id"].str();
+                    um.title = m["title"].str();
+                    um.author = m["author"].str();
+                    um.description = m["description"].str();
+                    um.cover_url = m["cover_url"].str(m["cover"].str());
+                    um.source_id = sourceId;
+                    um.status = m["status"].str();
+                    results.push_back(um);
+                }
+            }
+        }
+        return results;
+    }
+
+    std::vector<UnifiedChapter> fetchAidokuChapters(const std::string& sourceId, const std::string& mangaId, std::string* errOut) {
+        std::vector<UnifiedChapter> list;
+        aidoku_client_.refreshChapters(sourceId, mangaId, nullptr);
+        Json::Value chs = aidoku_client_.listCachedChapters(sourceId, mangaId, errOut);
+        if (chs.isArray()) {
+            for (const auto& item : chs.asArray()) {
+                UnifiedChapter ch;
+                ch.id = item["id"].str();
+                if (item["chapter_num"].isNumber()) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%.4g", item["chapter_num"].num());
+                    ch.chapterNum = buf;
+                } else {
+                    ch.chapterNum = item["chapter_num"].str();
+                }
+                ch.title = item["title"].str();
+                ch.scanlator = item["scanlator"].str();
+                ch.source_id = sourceId;
+                ch.url = item["url"].str();
+                list.push_back(ch);
+            }
+        }
+        return list;
+    }
     std::vector<UnifiedManga> fetchMangaDexPopular(std::string* errOut) {
         std::vector<UnifiedManga> results;
         auto jsonList = mangadex_client_.queryMangaList("", "popular", errOut);

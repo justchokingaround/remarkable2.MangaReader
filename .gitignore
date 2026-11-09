@@ -5,3 +5,4 @@ build/
 *.tmp
 .DS_Store
 kindle/native/extension/bin/rm2manga
+kindle/native/extension/bin/aidoku-server
