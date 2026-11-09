@@ -327,7 +327,12 @@ inline bool httpsGetString(const std::string& url, std::string& bodyOut, int tim
     std::string ref = getRefererForUrl(url);
     if (const char* helper = httpHelper()) {
         static int counter = 0;
-        std::string tmp = "/tmp/rm2manga_http_" + std::to_string(::getpid()) + "_" +
+        std::string tmpDir = "/tmp";
+        std::error_code ec;
+        if (fs::exists("/mnt/us/manga/.cache/tmp", ec)) {
+            tmpDir = "/mnt/us/manga/.cache/tmp";
+        }
+        std::string tmp = tmpDir + "/rm2manga_http_" + std::to_string(::getpid()) + "_" +
                           std::to_string(counter++) + ".body";
         std::string errFile = tmp + ".err";
         std::vector<std::string> args = {helper, "get", url, tmp, ref};

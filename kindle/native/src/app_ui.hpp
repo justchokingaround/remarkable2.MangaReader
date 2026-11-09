@@ -65,7 +65,7 @@ private:
     int reader_current_page_ = 0;
     int reader_total_pages_ = 0;
     std::vector<std::string> reader_page_files_;
-    extractor::PageCache page_cache_;
+    extractor::PageCache page_cache_{"/mnt/us/manga/.cache/pages"};
     bool reader_show_overlay_ = false;
     int reader_page_turn_counter_ = 0;
 
@@ -143,6 +143,21 @@ public:
     bool init() {
         if (!std::getenv("RM2MANGA_HTTP_HELPER")) {
             ::setenv("RM2MANGA_HTTP_HELPER", "/mnt/us/extensions/rm2manga/bin/fetch.sh", 1);
+        }
+
+        std::error_code ec;
+        fs::create_directories("/mnt/us/manga/.cache/pages", ec);
+        fs::create_directories("/mnt/us/manga/.cache/tmp", ec);
+        fs::create_directories("/mnt/us/manga/.cache/covers", ec);
+
+        // Clean up any stale rm2manga files from /tmp to protect Kindle's 64MB RAM tmpfs
+        if (fs::exists("/tmp", ec)) {
+            for (const auto& p : fs::directory_iterator("/tmp", ec)) {
+                std::string fname = p.path().filename().string();
+                if (fname.rfind("rm2manga", 0) == 0) {
+                    fs::remove_all(p.path(), ec);
+                }
+            }
         }
 
         if (!display_.init()) return false;
@@ -1658,7 +1673,7 @@ private:
         fs::path destDir = "/mnt/us/manga/" + mangaTitle;
         std::string safeId = ch.id.empty() ? ch.title : ch.id;
         for (char& c : safeId) if (c == '/' || c == ':' || c == ' ') c = '_';
-        fs::path tmpExtract = "/tmp/rm2manga_dl_" + safeId;
+        fs::path tmpExtract = "/mnt/us/manga/.cache/tmp/rm2manga_dl_" + safeId;
 
         std::error_code ec;
         fs::create_directories(tmpExtract, ec);
@@ -1944,7 +1959,7 @@ private:
         fs::path destDir = "/mnt/us/manga/" + selected_manga_.title;
         std::string safeId = ch.id.empty() ? ch.title : ch.id;
         for (char& c : safeId) if (c == '/' || c == ':' || c == ' ') c = '_';
-        fs::path tmpExtract = "/tmp/rm2manga_dl_" + safeId;
+        fs::path tmpExtract = "/mnt/us/manga/.cache/tmp/rm2manga_dl_" + safeId;
 
         std::error_code ec;
         fs::create_directories(tmpExtract, ec);
@@ -2091,7 +2106,7 @@ private:
     void cacheCoversForBrowse() {
         std::error_code ec;
         fs::create_directories("/mnt/us/manga/.cache/covers", ec);
-        std::string batchFile = "/tmp/rm2manga_cover_batch.txt";
+        std::string batchFile = "/mnt/us/manga/.cache/tmp/rm2manga_cover_batch.txt";
         std::ofstream out(batchFile);
         int count = 0;
         for (const auto& m : browse_mangas_) {
