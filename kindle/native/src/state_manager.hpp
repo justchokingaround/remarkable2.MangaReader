@@ -5,6 +5,7 @@
 #include "../../../backend/src/util.hpp"
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 #include <ctime>
 #include <filesystem>
@@ -72,12 +73,37 @@ public:
             progress_map_.clear();
             for (const auto& kv : root["history"].asObject()) {
                 MangaProgress p;
-                p.manga_title = kv.first;
-                p.chapter_title = kv.second["chapter_title"].str();
-                p.page_index = static_cast<int>(kv.second["page_index"].integer(0));
-                p.total_pages = static_cast<int>(kv.second["total_pages"].integer(0));
-                p.last_read = static_cast<time_t>(kv.second["last_read"].integer(0));
-                progress_map_[kv.first] = p;
+                const auto& item = kv.second;
+                p.manga_title = item.has("manga_title") ? item["manga_title"].str() : kv.first;
+                p.source_id = item["source_id"].str();
+                p.manga_id = item["manga_id"].str();
+                p.cover_url = item["cover_url"].str();
+                p.cover_path = item["cover_path"].str();
+                p.chapter_id = item["chapter_id"].str();
+                p.chapter_title = item["chapter_title"].str();
+                p.chapter_num = item["chapter_num"].num(-1.0);
+                p.page_index = static_cast<int>(item["page_index"].integer(0));
+                p.total_pages = static_cast<int>(item["total_pages"].integer(0));
+                p.last_read = static_cast<time_t>(item["last_read"].integer(0));
+
+                // Backwards compatibility migration: if source_id or manga_id missing,
+                // try to populate from library
+                if (p.source_id.empty() || p.manga_id.empty()) {
+                    for (const auto& libItem : root["library"].asArray()) {
+                        if (libItem["title"].str() == p.manga_title) {
+                            p.source_id = libItem["source_id"].str();
+                            p.manga_id = libItem["id"].str();
+                            if (p.cover_url.empty()) p.cover_url = libItem["cover_url"].str();
+                            break;
+                        }
+                    }
+                }
+
+                std::string k = makeKey(p.source_id, p.manga_id, p.manga_title);
+                progress_map_[k] = p;
+                if (!p.manga_title.empty()) {
+                    progress_map_[p.manga_title] = p;
+                }
             }
         }
 
@@ -133,13 +159,30 @@ public:
         root["settings"] = s;
 
         Json::Value h = Json::Value::object();
+        std::set<std::string> savedKeys;
         for (const auto& kv : progress_map_) {
-            Json::Value p = Json::Value::object();
-            p["chapter_title"] = kv.second.chapter_title;
-            p["page_index"] = static_cast<double>(kv.second.page_index);
-            p["total_pages"] = static_cast<double>(kv.second.total_pages);
-            p["last_read"] = static_cast<double>(kv.second.last_read);
-            h[kv.first] = p;
+            const auto& p = kv.second;
+            std::string canonicalKey = makeKey(p.source_id, p.manga_id, p.manga_title);
+            if (savedKeys.find(canonicalKey) != savedKeys.end()) continue;
+            savedKeys.insert(canonicalKey);
+
+            Json::Value item = Json::Value::object();
+            item["source_id"] = p.source_id;
+            item["manga_id"] = p.manga_id;
+            item["manga_title"] = p.manga_title;
+            item["cover_url"] = p.cover_url;
+            item["cover_path"] = p.cover_path;
+            item["chapter_id"] = p.chapter_id;
+            item["chapter_title"] = p.chapter_title;
+            if (p.chapter_num >= 0) item["chapter_num"] = p.chapter_num;
+            item["page_index"] = static_cast<double>(p.page_index);
+            item["total_pages"] = static_cast<double>(p.total_pages);
+            item["last_read"] = static_cast<double>(p.last_read);
+
+            h[canonicalKey] = item;
+            if (!p.manga_title.empty() && p.manga_title != canonicalKey) {
+                h[p.manga_title] = item;
+            }
         }
         root["history"] = h;
 
@@ -248,49 +291,123 @@ public:
         return list;
     }
 
-    void updateProgress(const std::string& manga, const std::string& chapter, int page, int total) {
-        if (manga.empty()) return;
-        active_manga_ = manga;
+    void updateProgress(const std::string& sourceId,
+                        const std::string& mangaId,
+                        const std::string& mangaTitle,
+                        const std::string& chapterId,
+                        const std::string& chapterTitle,
+                        double chapterNum,
+                        int page,
+                        int total,
+                        const std::string& coverUrl = "",
+                        const std::string& coverPath = "") {
+        if (mangaTitle.empty()) return;
+        active_manga_ = mangaTitle;
 
+        std::string canonicalKey = makeKey(sourceId, mangaId, mangaTitle);
         MangaProgress p;
-        p.manga_title = manga;
-        p.chapter_title = chapter;
+        auto it = progress_map_.find(canonicalKey);
+        if (it != progress_map_.end()) {
+            p = it->second;
+        }
+        p.source_id = sourceId;
+        p.manga_id = mangaId;
+        p.manga_title = mangaTitle;
+        if (!coverUrl.empty()) p.cover_url = coverUrl;
+        if (!coverPath.empty()) p.cover_path = coverPath;
+        p.chapter_id = chapterId;
+        p.chapter_title = chapterTitle;
+        p.chapter_num = chapterNum;
         p.page_index = page;
         p.total_pages = total;
         p.last_read = std::time(nullptr);
-        progress_map_[manga] = p;
+
+        progress_map_[canonicalKey] = p;
+        if (!mangaTitle.empty()) {
+            progress_map_[mangaTitle] = p;
+        }
 
         save();
     }
 
-    bool getProgress(const std::string& manga, MangaProgress& out) const {
-        auto it = progress_map_.find(manga);
+    void updateProgress(const std::string& manga, const std::string& chapter, int page, int total) {
+        updateProgress("", "", manga, "", chapter, -1.0, page, total);
+    }
+
+    bool getProgress(const std::string& sourceId, const std::string& mangaId, const std::string& mangaTitle, MangaProgress& out) const {
+        std::string canonicalKey = makeKey(sourceId, mangaId, mangaTitle);
+        auto it = progress_map_.find(canonicalKey);
         if (it != progress_map_.end()) {
             out = it->second;
             return true;
         }
-        return false;
-    }
-
-    bool getHeroManga(MangaProgress& out) const {
-        if (!active_manga_.empty()) {
-            auto it = progress_map_.find(active_manga_);
-            if (it != progress_map_.end()) {
-                out = it->second;
+        if (!mangaTitle.empty()) {
+            auto it2 = progress_map_.find(mangaTitle);
+            if (it2 != progress_map_.end()) {
+                out = it2->second;
                 return true;
             }
         }
-        // Fallback to highest timestamp
-        time_t bestTime = 0;
-        bool found = false;
+        return false;
+    }
+
+    bool getProgress(const std::string& manga, MangaProgress& out) const {
+        return getProgress("", "", manga, out);
+    }
+
+    std::vector<MangaProgress> getRecentHistory(int limit = 50) const {
+        std::vector<MangaProgress> list;
+        std::set<std::string> seen;
         for (const auto& kv : progress_map_) {
-            if (kv.second.last_read > bestTime) {
-                bestTime = kv.second.last_read;
-                out = kv.second;
-                found = true;
+            const auto& p = kv.second;
+            if (p.last_read <= 0 || p.manga_title.empty()) continue;
+            std::string canonicalKey = makeKey(p.source_id, p.manga_id, p.manga_title);
+            if (seen.find(canonicalKey) != seen.end()) continue;
+            seen.insert(canonicalKey);
+            list.push_back(p);
+        }
+        std::sort(list.begin(), list.end(), [](const MangaProgress& a, const MangaProgress& b) {
+            return a.last_read > b.last_read;
+        });
+        if (static_cast<int>(list.size()) > limit) {
+            list.resize(limit);
+        }
+        return list;
+    }
+
+    bool clearHistoryItem(const std::string& sourceId, const std::string& mangaId, const std::string& mangaTitle) {
+        std::string canonicalKey = makeKey(sourceId, mangaId, mangaTitle);
+        bool erased = false;
+        auto it = progress_map_.find(canonicalKey);
+        if (it != progress_map_.end()) {
+            progress_map_.erase(it);
+            erased = true;
+        }
+        if (!mangaTitle.empty()) {
+            auto it2 = progress_map_.find(mangaTitle);
+            if (it2 != progress_map_.end()) {
+                progress_map_.erase(it2);
+                erased = true;
             }
         }
-        return found;
+        if (erased) {
+            save();
+        }
+        return erased;
+    }
+
+    void clearAllHistory() {
+        progress_map_.clear();
+        save();
+    }
+
+    bool getHeroManga(MangaProgress& out) const {
+        auto recent = getRecentHistory(1);
+        if (!recent.empty()) {
+            out = recent[0];
+            return true;
+        }
+        return false;
     }
 };
 

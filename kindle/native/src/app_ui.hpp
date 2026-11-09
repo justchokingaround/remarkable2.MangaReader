@@ -26,6 +26,7 @@ namespace kindle {
 
 enum class ViewState {
     LIBRARY = 0,
+    RECENT,
     BROWSE,
     DETAIL,
     READER,
@@ -51,7 +52,7 @@ private:
 
     std::atomic<bool> is_running_{true};
     ViewState current_view_ = ViewState::LIBRARY;
-    int selected_tab_ = 0; // 0: Library, 1: Browse, 2: Recent, 3: Settings
+    int selected_tab_ = 0; // 0: Library, 1: Recent, 2: Browse, 3: Downloads, 4: Settings
 
     // Manga data
     std::vector<UnifiedManga> library_mangas_;
@@ -218,6 +219,11 @@ private:
                 if (state_.settings().button_inverted) prevPage(); else nextPage();
             } else if (current_view_ == ViewState::DETAIL) {
                 nextChapterPage();
+            } else if (current_view_ == ViewState::RECENT || current_view_ == ViewState::LIBRARY ||
+                       current_view_ == ViewState::DOWNLOADS || current_view_ == ViewState::BROWSE) {
+                scroll_offset_ += 350;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
             }
             return;
         }
@@ -226,6 +232,11 @@ private:
                 if (state_.settings().button_inverted) nextPage(); else prevPage();
             } else if (current_view_ == ViewState::DETAIL) {
                 prevChapterPage();
+            } else if (current_view_ == ViewState::RECENT || current_view_ == ViewState::LIBRARY ||
+                       current_view_ == ViewState::DOWNLOADS || current_view_ == ViewState::BROWSE) {
+                scroll_offset_ = std::max(0, scroll_offset_ - 350);
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
             }
             return;
         }
@@ -238,9 +249,9 @@ private:
     void handleTouch(int x, int y) {
         // 1. Bottom Navigation Bar touch (only outside Reader)
         if (y >= SCREEN_H - NAV_H && current_view_ != ViewState::READER) {
-            int tab_w = SCREEN_W / 4;
+            int tab_w = SCREEN_W / 5;
             int tapped_tab = x / tab_w;
-            if (tapped_tab >= 0 && tapped_tab < 4) {
+            if (tapped_tab >= 0 && tapped_tab < 5) {
                 input_.clear();
                 show_keyboard_ = false;
                 selected_tab_ = tapped_tab;
@@ -253,6 +264,10 @@ private:
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
                 } else if (selected_tab_ == 1) {
+                    current_view_ = ViewState::RECENT;
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                } else if (selected_tab_ == 2) {
                     current_view_ = ViewState::BROWSE;
                     if (browse_mangas_.empty()) {
                         status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
@@ -262,12 +277,12 @@ private:
                     }
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
-                } else if (selected_tab_ == 2) {
+                } else if (selected_tab_ == 3) {
                     current_view_ = ViewState::DOWNLOADS;
                     loadLibraryFromDisk();
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
-                } else if (selected_tab_ == 3) {
+                } else if (selected_tab_ == 4) {
                     current_view_ = ViewState::SETTINGS;
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
@@ -319,6 +334,8 @@ private:
         // 3. View-specific touch
         if (current_view_ == ViewState::LIBRARY) {
             handleLibraryTouch(x, y);
+        } else if (current_view_ == ViewState::RECENT) {
+            handleRecentTouch(x, y);
         } else if (current_view_ == ViewState::BROWSE) {
             handleBrowseTouch(x, y);
         } else if (current_view_ == ViewState::DETAIL) {
@@ -369,30 +386,132 @@ private:
         }
     }
 
-    void resumeHero(const MangaProgress& hero) {
-        selected_manga_.title = hero.manga_title;
-        selected_manga_.id = hero.manga_title;
+    void handleRecentTouch(int x, int y) {
+        // Exit App button in header
+        if (x >= SCREEN_W - 190 && y >= 10 && y <= TOP_H) {
+            quit();
+            return;
+        }
+
+        // Clear History button in header
+        auto recent = state_.getRecentHistory();
+        if (!recent.empty() && x >= SCREEN_W - 350 && x < SCREEN_W - 190 && y >= 10 && y <= TOP_H) {
+            state_.clearAllHistory();
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        if (recent.empty()) {
+            int midY = 600;
+            int btnW = 280;
+            int btnH = 65;
+            int btnX = (SCREEN_W - btnW) / 2;
+            int btnY = midY + 110;
+            if (x >= btnX && x <= btnX + btnW && y >= btnY && y <= btnY + btnH) {
+                selected_tab_ = 2;
+                current_view_ = ViewState::BROWSE;
+                scroll_offset_ = 0;
+                status_banner_.clear();
+                if (browse_mangas_.empty()) {
+                    status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    fetchPopular();
+                }
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+            }
+            return;
+        }
+
+        int listStartY = TOP_H + 20;
+        int y_start = listStartY + 35;
+        int item_h = 135;
+        int item_gap = 14;
+        int row_stride = item_h + item_gap;
+
+        for (size_t i = 0; i < recent.size(); ++i) {
+            int item_y = y_start + static_cast<int>(i) * row_stride - scroll_offset_;
+            if (y >= item_y && y < item_y + item_h) {
+                const auto& prog = recent[i];
+                int btnW = 160;
+                int btnH = 50;
+                int btnX = SCREEN_W - btnW - 45;
+
+                // Tap on [ Details ] button
+                if (x >= btnX && x <= btnX + btnW && y >= item_y + 72 && y <= item_y + 72 + btnH) {
+                    UnifiedManga m;
+                    m.title = prog.manga_title;
+                    m.id = prog.manga_id.empty() ? prog.manga_title : prog.manga_id;
+                    m.source_id = prog.source_id;
+                    m.cover_url = prog.cover_url;
+                    m.cover_path = prog.cover_path;
+                    for (const auto& libM : library_mangas_) {
+                        if (libM.title == prog.manga_title) {
+                            m = libM;
+                            break;
+                        }
+                    }
+                    selected_manga_ = m;
+                    if (!selected_manga_.source_id.empty() && selected_manga_.source_id != "local") {
+                        sources_.setActiveSourceId(selected_manga_.source_id);
+                    }
+                    loadMangaChapters(selected_manga_);
+                    current_view_ = ViewState::DETAIL;
+                    scroll_offset_ = 0;
+                    status_banner_.clear();
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+
+                // Tap on [ Resume > ] or card body
+                resumeRecent(prog);
+                return;
+            }
+        }
+    }
+
+    void resumeRecent(const MangaProgress& prog) {
+        UnifiedManga m;
+        m.title = prog.manga_title;
+        m.id = prog.manga_id.empty() ? prog.manga_title : prog.manga_id;
+        m.source_id = prog.source_id;
+        m.cover_url = prog.cover_url;
+        m.cover_path = prog.cover_path;
+
         for (const auto& libM : library_mangas_) {
-            if (libM.title == hero.manga_title) {
-                selected_manga_ = libM;
+            if ((!prog.source_id.empty() && libM.source_id == prog.source_id && libM.id == prog.manga_id) ||
+                libM.title == prog.manga_title) {
+                m = libM;
                 break;
             }
         }
+        selected_manga_ = m;
+        if (!selected_manga_.source_id.empty() && selected_manga_.source_id != "local") {
+            sources_.setActiveSourceId(selected_manga_.source_id);
+        }
         loadMangaChapters(selected_manga_);
 
-        double heroNum = parseChapterNumber(hero.chapter_title);
+        double heroNum = prog.chapter_num >= 0 ? prog.chapter_num : parseChapterNumber(prog.chapter_title);
         for (size_t i = 0; i < selected_chapters_.size(); ++i) {
             double chNum = parseChapterNumber(selected_chapters_[i].chapterNum.empty() ? selected_chapters_[i].title : selected_chapters_[i].chapterNum);
-            if (selected_chapters_[i].title == hero.chapter_title ||
-                selected_chapters_[i].chapterNum == hero.chapter_title ||
+            if ((!prog.chapter_id.empty() && selected_chapters_[i].id == prog.chapter_id) ||
+                selected_chapters_[i].title == prog.chapter_title ||
+                selected_chapters_[i].chapterNum == prog.chapter_title ||
                 (chNum >= 0 && heroNum >= 0 && std::abs(chNum - heroNum) < 0.0001)) {
-                openChapter(static_cast<int>(i), true, hero.page_index);
+                openChapter(static_cast<int>(i), true, prog.page_index);
                 return;
             }
         }
         if (!selected_chapters_.empty()) {
             openChapter(0);
         }
+    }
+
+    void resumeHero(const MangaProgress& hero) {
+        resumeRecent(hero);
     }
 
     void loadMangaChapters(const UnifiedManga& manga) {
@@ -534,7 +653,11 @@ private:
 
         // Back button (< Back)
         if (x >= 20 && x <= 180 && y >= 15 && y <= 70) {
-            current_view_ = (selected_tab_ == 0) ? ViewState::LIBRARY : ViewState::BROWSE;
+            if (selected_tab_ == 0) current_view_ = ViewState::LIBRARY;
+            else if (selected_tab_ == 1) current_view_ = ViewState::RECENT;
+            else if (selected_tab_ == 2) current_view_ = ViewState::BROWSE;
+            else if (selected_tab_ == 3) current_view_ = ViewState::DOWNLOADS;
+            else current_view_ = ViewState::SETTINGS;
             scroll_offset_ = 0;
             status_banner_.clear();
             renderAll();
@@ -1215,8 +1338,18 @@ private:
 
     void recordProgress() {
         if (current_chapter_idx_ >= 0 && current_chapter_idx_ < static_cast<int>(selected_chapters_.size())) {
-            std::string chName = selected_chapters_[current_chapter_idx_].chapterNum;
-            state_.updateProgress(selected_manga_.title, chName, reader_current_page_, reader_total_pages_);
+            const auto& ch = selected_chapters_[current_chapter_idx_];
+            double chNum = parseChapterNumber(ch.chapterNum.empty() ? ch.title : ch.chapterNum);
+            state_.updateProgress(selected_manga_.source_id,
+                                 selected_manga_.id,
+                                 selected_manga_.title,
+                                 ch.id,
+                                 ch.title.empty() ? ("Chapter " + ch.chapterNum) : ch.title,
+                                 chNum,
+                                 reader_current_page_,
+                                 reader_total_pages_,
+                                 selected_manga_.cover_url,
+                                 selected_manga_.cover_path);
         }
     }
 
@@ -1757,6 +1890,8 @@ private:
 
         if (current_view_ == ViewState::LIBRARY) {
             renderLibrary();
+        } else if (current_view_ == ViewState::RECENT) {
+            renderRecent();
         } else if (current_view_ == ViewState::BROWSE) {
             renderBrowse();
         } else if (current_view_ == ViewState::DETAIL) {
@@ -1845,6 +1980,99 @@ private:
 
             y += item_h + 15;
             if (y > SCREEN_H - NAV_H - item_h) break;
+        }
+    }
+
+    void renderRecent() {
+        // Top Header
+        canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
+        canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
+        font_.drawText(canvas_, 30, 22, "rm2manga", 34, 0x00, true);
+        font_.drawText(canvas_, 220, 27, "Recent History", 26, 0x60, false);
+
+        auto recent = state_.getRecentHistory();
+        if (!recent.empty()) {
+            font_.drawButton(canvas_, SCREEN_W - 350, 15, 140, 50, "Clear", false, 20);
+        }
+        font_.drawButton(canvas_, SCREEN_W - 190, 15, 160, 50, "Exit App", false, 22);
+
+        int listStartY = TOP_H + 20;
+
+        if (recent.empty()) {
+            int midY = 600;
+            font_.drawText(canvas_, SCREEN_W / 2 - 160, midY, "No reading history yet.", 30, 0x50, true);
+            font_.drawText(canvas_, SCREEN_W / 2 - 280, midY + 45, "Manga you read will appear here with your latest chapter & page progress.", 22, 0x80, false);
+
+            int btnW = 280;
+            int btnH = 65;
+            int btnX = (SCREEN_W - btnW) / 2;
+            int btnY = midY + 110;
+            font_.drawButton(canvas_, btnX, btnY, btnW, btnH, "Browse Manga", true, 26);
+            return;
+        }
+
+        font_.drawText(canvas_, 30, listStartY + 5, "Recent History (" + std::to_string(recent.size()) + ")", 24, 0x50, true);
+
+        int y_start = listStartY + 35;
+        int item_h = 135;
+        int item_gap = 14;
+        int row_stride = item_h + item_gap;
+
+        for (size_t i = 0; i < recent.size(); ++i) {
+            int item_y = y_start + static_cast<int>(i) * row_stride - scroll_offset_;
+            if (item_y + item_h < TOP_H || item_y > SCREEN_H - NAV_H) continue;
+
+            const auto& prog = recent[i];
+
+            // Card outline
+            canvas_.fillRect(25, item_y, SCREEN_W - 50, item_h, 0xFF);
+            canvas_.drawRect(25, item_y, SCREEN_W - 50, item_h, 0x00, 2);
+
+            // Cover thumbnail
+            drawCoverThumbnail(35, item_y + 10, 80, 115, prog.cover_url, prog.manga_title, prog.manga_id);
+
+            // Title
+            std::string dispTitle = prog.manga_title;
+            if (dispTitle.length() > 32) dispTitle = dispTitle.substr(0, 30) + "...";
+            font_.drawText(canvas_, 135, item_y + 20, dispTitle, 28, 0x00, true);
+
+            // Chapter line
+            std::string chText = prog.chapter_title.empty() ? "In progress" : prog.chapter_title;
+            if (chText.length() > 38) chText = chText.substr(0, 36) + "...";
+            font_.drawText(canvas_, 135, item_y + 55, chText, 22, 0x40, false);
+
+            // Page info
+            int pct = 0;
+            if (prog.total_pages > 0) {
+                pct = std::min(100, std::max(0, (prog.page_index + 1) * 100 / prog.total_pages));
+            }
+            std::string pgStr = "Page " + std::to_string(prog.page_index + 1);
+            if (prog.total_pages > 0) {
+                pgStr += " of " + std::to_string(prog.total_pages) + " (" + std::to_string(pct) + "%)";
+            }
+            std::string timeStr = util::formatTimeAgo(prog.last_read);
+            if (!timeStr.empty()) {
+                pgStr += "  •  " + timeStr;
+            }
+            font_.drawText(canvas_, 135, item_y + 85, pgStr, 20, 0x60, false);
+
+            // Mini progress bar
+            int pbar_w = 220;
+            int pbar_h = 8;
+            int pbar_x = 135;
+            int pbar_y = item_y + 112;
+            canvas_.drawRect(pbar_x, pbar_y, pbar_w, pbar_h, 0x80, 1);
+            int filled_w = (pbar_w - 2) * pct / 100;
+            if (filled_w > 0) {
+                canvas_.fillRect(pbar_x + 1, pbar_y + 1, filled_w, pbar_h - 2, 0x00);
+            }
+
+            // Action buttons on the right
+            int btnW = 160;
+            int btnH = 50;
+            int btnX = SCREEN_W - btnW - 45;
+            font_.drawButton(canvas_, btnX, item_y + 12, btnW, btnH, "Resume >", true, 22);
+            font_.drawButton(canvas_, btnX, item_y + 72, btnW, btnH, "Details", false, 20);
         }
     }
 
@@ -2327,10 +2555,10 @@ private:
         canvas_.fillRect(0, nav_y, SCREEN_W, NAV_H, 0xFF);
         canvas_.drawHLine(0, nav_y, SCREEN_W, 0x00, 2);
 
-        const char* tabs[] = { "Library", "Browse", "Downloads", "Settings" };
-        int tab_w = SCREEN_W / 4;
+        const char* tabs[] = { "Library", "Recent", "Browse", "Downloads", "Settings" };
+        int tab_w = SCREEN_W / 5;
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 5; ++i) {
             int x = i * tab_w;
             bool is_active = (selected_tab_ == i);
             if (is_active) {

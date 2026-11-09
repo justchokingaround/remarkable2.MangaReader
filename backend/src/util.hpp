@@ -29,6 +29,23 @@ inline int64_t nowSeconds() {
         .count();
 }
 
+inline std::string formatTimeAgo(time_t t) {
+    if (t <= 0) return "";
+    time_t now = std::time(nullptr);
+    int64_t diff = static_cast<int64_t>(now - t);
+    if (diff < 0) diff = 0;
+    if (diff < 60) return "Just now";
+    if (diff < 3600) return std::to_string(diff / 60) + "m ago";
+    if (diff < 86400) return std::to_string(diff / 3600) + "h ago";
+    if (diff < 604800) return std::to_string(diff / 86400) + "d ago";
+    struct tm tm_buf;
+    struct tm* tm = localtime_r(&t, &tm_buf);
+    if (!tm) return "";
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%b %d", tm);
+    return std::string(buf);
+}
+
 inline std::string urlEncode(const std::string& value) {
     static const char hex[] = "0123456789ABCDEF";
     std::string out;
@@ -74,6 +91,22 @@ inline std::string trim(const std::string& s) {
     size_t e = s.size();
     while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
     return s.substr(b, e - b);
+}
+
+inline std::string sanitizeFilename(const std::string& name) {
+    std::string out;
+    for (char c : name) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == '\0') {
+            out.push_back('_');
+        } else {
+            out.push_back(c);
+        }
+    }
+    while (out.find("..") != std::string::npos) {
+        size_t p = out.find("..");
+        out.replace(p, 2, "__");
+    }
+    return out;
 }
 
 // Natural filename sort so page_2.jpg < page_10.jpg
