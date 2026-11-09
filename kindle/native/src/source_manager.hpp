@@ -30,7 +30,7 @@ public:
         available_sources_.push_back({"mangafox", "MangaFox", "FanFox & MangaHere (English)", true, false, "v1", "en"});
         available_sources_.push_back({"mangakatana", "MangaKatana", "Fast Scans (English)", true, false, "v1", "en"});
 
-        if (aidoku_client_.ensureRunning()) {
+        if (aidoku_client_.isAvailableOnDisk() && aidoku_client_.ensureRunning()) {
             std::string err;
             Json::Value installed = aidoku_client_.listInstalledSources(&err);
             if (installed.isArray()) {

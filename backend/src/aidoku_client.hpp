@@ -251,10 +251,11 @@ public:
     }
 
     bool isAvailableOnDisk() const {
-        return ::access(serverBin_.c_str(), X_OK) == 0 || fs::exists(socketPath_);
+        return ::access(serverBin_.c_str(), X_OK) == 0;
     }
 
     bool healthCheck(int timeoutSec = 2) {
+        if (!isAvailableOnDisk() && !fs::exists(socketPath_)) return false;
         auto r = rawRequest("GET", "/health-check", "", timeoutSec);
         return r.ok && r.status >= 200 && r.status < 300;
     }
@@ -327,6 +328,9 @@ public:
     }
 
     bool ensureRunning() {
+        if (!isAvailableOnDisk()) {
+            return false;
+        }
         {
             std::lock_guard<std::mutex> lock(spawnMutex_);
             // Ensure no foreign Aidoku instance (e.g. different homeDir) holds /tmp/rakuyomi.sock
