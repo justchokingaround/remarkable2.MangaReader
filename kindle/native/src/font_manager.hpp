@@ -52,6 +52,31 @@ public:
 
     bool isLoaded() const { return regular_loaded_; }
 
+    static inline uint32_t nextCodepoint(const std::string& str, size_t& i) {
+        uint8_t c = static_cast<uint8_t>(str[i]);
+        if (c < 0x80) {
+            i += 1;
+            return c;
+        }
+        if ((c & 0xE0) == 0xC0 && i + 1 < str.size()) {
+            uint32_t cp = ((c & 0x1F) << 6) | (static_cast<uint8_t>(str[i + 1]) & 0x3F);
+            i += 2;
+            return cp;
+        }
+        if ((c & 0xF0) == 0xE0 && i + 2 < str.size()) {
+            uint32_t cp = ((c & 0x0F) << 12) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 2]) & 0x3F);
+            i += 3;
+            return cp;
+        }
+        if ((c & 0xF8) == 0xF0 && i + 3 < str.size()) {
+            uint32_t cp = ((c & 0x07) << 18) | ((static_cast<uint8_t>(str[i + 1]) & 0x3F) << 12) | ((static_cast<uint8_t>(str[i + 2]) & 0x3F) << 6) | (static_cast<uint8_t>(str[i + 3]) & 0x3F);
+            i += 4;
+            return cp;
+        }
+        i += 1;
+        return c;
+    }
+
     int measureText(const std::string& text, int pixelHeight, bool bold = false) const {
         if (!regular_loaded_) {
             int scale = std::max(1, pixelHeight / 16);
@@ -62,16 +87,12 @@ public:
         float scale = stbtt_ScaleForPixelHeight(font, static_cast<float>(pixelHeight));
         int totalWidth = 0;
 
-        for (size_t i = 0; i < text.length(); ++i) {
-            char c = text[i];
+        size_t i = 0;
+        while (i < text.length()) {
+            uint32_t cp = nextCodepoint(text, i);
             int advance = 0, lsb = 0;
-            stbtt_GetCodepointHMetrics(font, static_cast<int>(c), &advance, &lsb);
+            stbtt_GetCodepointHMetrics(font, static_cast<int>(cp), &advance, &lsb);
             totalWidth += static_cast<int>(std::round(advance * scale));
-
-            if (i + 1 < text.length()) {
-                int kern = stbtt_GetCodepointKernAdvance(font, static_cast<int>(c), static_cast<int>(text[i + 1]));
-                totalWidth += static_cast<int>(std::round(kern * scale));
-            }
         }
         return totalWidth;
     }
@@ -91,26 +112,28 @@ public:
         int baseline = static_cast<int>(std::round(ascent * scale));
 
         int curX = x;
-        for (size_t i = 0; i < text.length(); ++i) {
-            char c = text[i];
-            if (c == '\n') {
+        size_t i = 0;
+        while (i < text.length()) {
+            if (text[i] == '\n') {
                 curX = x;
                 y += pixelHeight + 6;
+                i++;
                 continue;
             }
 
+            uint32_t cp = nextCodepoint(text, i);
             int advance = 0, lsb = 0;
-            stbtt_GetCodepointHMetrics(font, static_cast<int>(c), &advance, &lsb);
+            stbtt_GetCodepointHMetrics(font, static_cast<int>(cp), &advance, &lsb);
 
             int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-            stbtt_GetCodepointBitmapBox(font, static_cast<int>(c), scale, scale, &x0, &y0, &x1, &y1);
+            stbtt_GetCodepointBitmapBox(font, static_cast<int>(cp), scale, scale, &x0, &y0, &x1, &y1);
 
             int glyphW = x1 - x0;
             int glyphH = y1 - y0;
 
             if (glyphW > 0 && glyphH > 0) {
                 std::vector<uint8_t> bmp(static_cast<size_t>(glyphW * glyphH), 0);
-                stbtt_MakeCodepointBitmap(font, bmp.data(), glyphW, glyphH, glyphW, scale, scale, static_cast<int>(c));
+                stbtt_MakeCodepointBitmap(font, bmp.data(), glyphW, glyphH, glyphW, scale, scale, static_cast<int>(cp));
 
                 int outY = y + baseline + y0;
                 int outX = curX + x0;
@@ -127,7 +150,6 @@ public:
                         if (alpha == 0) continue;
 
                         uint8_t bg = canvas.getPixel(targetX, targetY);
-                        // Alpha blending
                         uint8_t blended = static_cast<uint8_t>((bg * (255 - alpha) + color * alpha) / 255);
                         canvas.setPixel(targetX, targetY, blended);
                     }
@@ -135,13 +157,20 @@ public:
             }
 
             curX += static_cast<int>(std::round(advance * scale));
-
-            if (i + 1 < text.length()) {
-                int kern = stbtt_GetCodepointKernAdvance(font, static_cast<int>(c), static_cast<int>(text[i + 1]));
-                curX += static_cast<int>(std::round(kern * scale));
-            }
         }
         return curX - x;
+    }
+
+    void drawButton(Canvas& canvas, int x, int y, int w, int h, const std::string& label, bool selected = false, int fontSize = 24) {
+        uint8_t bg = selected ? 0x00 : 0xFF;
+        uint8_t fg = selected ? 0xFF : 0x00;
+        canvas.fillRect(x, y, w, h, bg);
+        canvas.drawRect(x, y, w, h, 0x00, 2);
+
+        int text_w = measureText(label, fontSize, true);
+        int text_x = x + (w - text_w) / 2;
+        int text_y = y + (h - fontSize) / 2;
+        drawText(canvas, text_x, text_y, label, fontSize, fg, true);
     }
 };
 

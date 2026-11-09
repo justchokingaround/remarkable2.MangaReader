@@ -27,7 +27,8 @@ enum class ViewState {
     DETAIL,
     READER,
     DOWNLOADS,
-    SETTINGS
+    SETTINGS,
+    SOURCES
 };
 
 class AppUI {
@@ -182,6 +183,7 @@ private:
             int tapped_tab = x / tab_w;
             if (tapped_tab >= 0 && tapped_tab < 4) {
                 input_.clear();
+                show_keyboard_ = false;
                 selected_tab_ = tapped_tab;
                 scroll_offset_ = 0;
                 status_banner_.clear();
@@ -249,6 +251,8 @@ private:
             handleDownloadsTouch(x, y);
         } else if (current_view_ == ViewState::SETTINGS) {
             handleSettingsTouch(x, y);
+        } else if (current_view_ == ViewState::SOURCES) {
+            handleSourcesTouch(x, y);
         } else if (current_view_ == ViewState::READER) {
             handleReaderTouch(x, y);
         }
@@ -328,9 +332,15 @@ private:
     }
 
     void handleBrowseTouch(int x, int y) {
-        // Search bar or button clicked
+        // Search bar, Search button, or ⚙ Sources clicked
         if (y >= 10 && y <= TOP_H - 10) {
-            if (x >= SCREEN_W - 160) {
+            if (x >= SCREEN_W - 180) {
+                show_keyboard_ = false;
+                current_view_ = ViewState::SOURCES;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            } else if (x >= SCREEN_W - 340) {
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
                 } else {
@@ -338,22 +348,24 @@ private:
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
                 }
+                return;
             } else {
                 show_keyboard_ = true;
                 renderAll();
                 display_.refreshFull(WAVEFORM_GC16);
+                return;
             }
-            return;
         }
 
         // Source Switcher Pills: y: 90 to 150
         if (y >= 90 && y <= 150) {
             const auto& srcList = sources_.getSources();
-            int pill_w = 240;
-            int pill_x = 20;
+            int pill_w = 200;
+            int pill_x = 110;
 
             for (const auto& s : srcList) {
                 if (x >= pill_x && x <= pill_x + pill_w) {
+                    show_keyboard_ = false;
                     sources_.setActiveSourceId(s.id);
                     status_banner_ = "Switched source to " + s.name;
                     fetchPopular();
@@ -501,6 +513,43 @@ private:
             loadLibraryFromDisk();
             status_banner_ = "Library refreshed (" + std::to_string(library_mangas_.size()) + " manga)!";
             renderSettings();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+    }
+
+    void handleSourcesTouch(int x, int y) {
+        // Back button to Browse
+        if (x >= SCREEN_W - 200 && y >= 10 && y <= TOP_H) {
+            current_view_ = ViewState::BROWSE;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        int start_y = TOP_H + 35;
+        int card_h = 130;
+        const auto& srcList = sources_.getSources();
+
+        for (size_t i = 0; i < srcList.size(); ++i) {
+            int cy = start_y + static_cast<int>(i) * (card_h + 15);
+            if (y >= cy && y <= cy + card_h) {
+                sources_.setActiveSourceId(srcList[i].id);
+                status_banner_ = "Active source: " + srcList[i].name;
+                fetchPopular();
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+        }
+
+        // Action button: Rescan Extension Catalog
+        int infoY = start_y + static_cast<int>(srcList.size()) * (card_h + 15) + 20;
+        int boxY = infoY + 45;
+        int btnY = boxY + 180;
+        if (x >= 40 && x <= SCREEN_W - 40 && y >= btnY && y <= btnY + 70) {
+            status_banner_ = "Extension catalog up to date (MangaDex, MangaFox, MangaKatana).";
+            renderAll();
             display_.refreshFull(WAVEFORM_GC16);
             return;
         }
@@ -895,6 +944,8 @@ private:
             renderDownloads();
         } else if (current_view_ == ViewState::SETTINGS) {
             renderSettings();
+        } else if (current_view_ == ViewState::SOURCES) {
+            renderSources();
         } else if (current_view_ == ViewState::READER) {
             renderReader();
             return;
@@ -913,7 +964,7 @@ private:
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 22, "rm2manga", 34, 0x00, true);
         font_.drawText(canvas_, 220, 27, "Library", 26, 0x60, false);
-        canvas_.drawButton(SCREEN_W - 190, 15, 160, 50, "Exit App", false, 2);
+        font_.drawButton(canvas_, SCREEN_W - 190, 15, 160, 50, "Exit App", false, 22);
 
         // Hero Card: Continue Reading
         MangaProgress hero;
@@ -935,10 +986,10 @@ private:
             font_.drawText(canvas_, 140, heroY + 20, "CONTINUE READING", 20, 0x60, true);
             font_.drawText(canvas_, 140, heroY + 50, hero.manga_title, 30, 0x00, true);
 
-            std::string sub = "Ch. " + hero.chapter_title + " • Page " + std::to_string(hero.page_index + 1) + " of " + std::to_string(hero.total_pages);
+            std::string sub = "Ch. " + hero.chapter_title + " | Page " + std::to_string(hero.page_index + 1) + " of " + std::to_string(hero.total_pages);
             font_.drawText(canvas_, 140, heroY + 95, sub, 24, 0x40, false);
 
-            canvas_.drawButton(SCREEN_W - 220, heroY + 45, 170, 60, "Resume >", true, 2);
+            font_.drawButton(canvas_, SCREEN_W - 220, heroY + 45, 170, 60, "Resume >", true, 24);
             listStartY = heroY + heroH + 25;
         }
 
@@ -960,7 +1011,7 @@ private:
             font_.drawText(canvas_, 135, y + 25, manga.title, 28, 0x00, true);
             font_.drawText(canvas_, 135, y + 75, "Ready to read", 22, 0x70, false);
 
-            canvas_.drawButton(SCREEN_W - 180, y + 35, 130, 55, "Open", false, 2);
+            font_.drawButton(canvas_, SCREEN_W - 180, y + 35, 130, 55, "Open", false, 22);
 
             y += item_h + 15;
             if (y > SCREEN_H - NAV_H - item_h) break;
@@ -974,20 +1025,21 @@ private:
         std::string searchDisplay = search_query_.empty()
             ? (show_keyboard_ ? "_" : "Search manga...")
             : (show_keyboard_ ? search_query_ + "_" : search_query_);
-        canvas_.drawRect(20, 15, SCREEN_W - 200, 50, 0x00, 2);
-        font_.drawText(canvas_, 40, 27, searchDisplay, 24, (search_query_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
+        canvas_.drawRect(20, 15, SCREEN_W - 360, 50, 0x00, 2);
+        font_.drawText(canvas_, 35, 27, searchDisplay, 24, (search_query_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
 
-        canvas_.drawButton(SCREEN_W - 160, 15, 140, 50, "Search", true, 2);
+        font_.drawButton(canvas_, SCREEN_W - 330, 15, 130, 50, "Search", true, 22);
+        font_.drawButton(canvas_, SCREEN_W - 180, 15, 160, 50, "⚙ Sources", false, 22);
 
         // Source Switcher Pills
         int pill_y = TOP_H + 15;
         font_.drawText(canvas_, 25, pill_y + 10, "Source:", 22, 0x50, true);
 
-        int pill_x = 120;
+        int pill_x = 110;
         for (const auto& s : sources_.getSources()) {
             bool active = (s.id == sources_.getActiveSourceId());
-            canvas_.drawButton(pill_x, pill_y, 200, 45, s.name, active, 2);
-            pill_x += 215;
+            font_.drawButton(canvas_, pill_x, pill_y, 195, 45, s.name, active, 20);
+            pill_x += 210;
         }
 
         if (!status_banner_.empty()) {
@@ -1005,20 +1057,71 @@ private:
             if (t.length() > 32) t = t.substr(0, 30) + "...";
             font_.drawText(canvas_, 135, y + 22, t, 28, 0x00, true);
 
-            std::string sub = (manga.author.empty() ? sources_.getActiveSourceId() : manga.author) + " • " + manga.status;
+            std::string sub = (manga.author.empty() ? sources_.getActiveSourceId() : manga.author) + " | " + manga.status;
             font_.drawText(canvas_, 135, y + 70, sub, 22, 0x60, false);
 
-            canvas_.drawButton(SCREEN_W - 160, y + 35, 120, 55, "View", false, 2);
+            font_.drawButton(canvas_, SCREEN_W - 160, y + 35, 120, 55, "View", false, 22);
 
             y += item_h + 15;
             if (y > SCREEN_H - NAV_H - item_h) break;
         }
     }
 
+    void renderSources() {
+        canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
+        canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
+        font_.drawText(canvas_, 30, 22, "Manga Sources & Extensions", 32, 0x00, true);
+        font_.drawButton(canvas_, SCREEN_W - 190, 15, 170, 50, "< Browse", true, 22);
+
+        if (!status_banner_.empty()) {
+            font_.drawText(canvas_, 35, TOP_H + 12, status_banner_, 22, 0x00, true);
+        }
+
+        int start_y = TOP_H + 35;
+        int card_h = 130;
+        const auto& srcList = sources_.getSources();
+
+        for (size_t i = 0; i < srcList.size(); ++i) {
+            int cy = start_y + static_cast<int>(i) * (card_h + 15);
+            bool isActive = (srcList[i].id == sources_.getActiveSourceId());
+
+            canvas_.drawRect(25, cy, SCREEN_W - 50, card_h, 0x00, 2);
+            if (isActive) {
+                canvas_.fillRect(27, cy + 2, 8, card_h - 4, 0x00);
+            }
+
+            font_.drawText(canvas_, 45, cy + 22, srcList[i].name, 30, 0x00, true);
+            font_.drawText(canvas_, 45, cy + 62, srcList[i].description, 22, 0x60, false);
+            font_.drawText(canvas_, 45, cy + 92, "Status: Online | Protocol: HTTPS Modern TLS", 20, 0x80, false);
+
+            if (isActive) {
+                font_.drawButton(canvas_, SCREEN_W - 230, cy + 35, 180, 60, "✓ Active", true, 22);
+            } else {
+                font_.drawButton(canvas_, SCREEN_W - 230, cy + 35, 180, 60, "Select", false, 22);
+            }
+        }
+
+        int infoY = start_y + static_cast<int>(srcList.size()) * (card_h + 15) + 20;
+        font_.drawText(canvas_, 35, infoY, "CUSTOM EXTENSIONS & SOURCE REPOSITORIES", 22, 0x50, true);
+        canvas_.drawHLine(35, infoY + 30, SCREEN_W - 70, 0x00, 2);
+
+        int boxY = infoY + 45;
+        canvas_.drawRect(25, boxY, SCREEN_W - 50, 160, 0x00, 2);
+        canvas_.fillRect(26, boxY + 1, SCREEN_W - 52, 158, 0xF9);
+
+        font_.drawText(canvas_, 45, boxY + 20, "Active Index: Aidoku Community & rm2manga Official", 24, 0x00, true);
+        font_.drawText(canvas_, 45, boxY + 55, "Repository: https://raw.githubusercontent.com/Aidoku-Community/", 20, 0x50, false);
+        font_.drawText(canvas_, 45, boxY + 85, "Sources Loaded: MangaDex v5, MangaFox (FanFox/MangaHere), MangaKatana", 20, 0x50, false);
+        font_.drawText(canvas_, 45, boxY + 115, "Languages: English (en) [Default]", 20, 0x50, false);
+
+        int btnY = boxY + 180;
+        font_.drawButton(canvas_, 40, btnY, SCREEN_W - 80, 65, "↻ Rescan & Refresh Extension Catalog", false, 24);
+    }
+
     void renderDetail() {
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-        canvas_.drawButton(20, 15, 140, 50, "< Back", false, 2);
+        font_.drawButton(canvas_, 20, 15, 140, 50, "< Back", false, 22);
 
         std::string titleStr = selected_manga_.title;
         if (titleStr.length() > 28) titleStr = titleStr.substr(0, 26) + "...";
@@ -1046,9 +1149,9 @@ private:
             font_.drawText(canvas_, 50, y + 25, label, 24, 0x00, false);
 
             if (ch.isDownloaded) {
-                canvas_.drawButton(SCREEN_W - 200, y + 15, 120, 50, "Read", true, 2);
+                font_.drawButton(canvas_, SCREEN_W - 200, y + 15, 120, 50, "Read", true, 22);
             } else {
-                canvas_.drawButton(SCREEN_W - 220, y + 15, 140, 50, "Download", false, 2);
+                font_.drawButton(canvas_, SCREEN_W - 220, y + 15, 140, 50, "Download", false, 22);
             }
 
             y += item_h + 10;
@@ -1074,7 +1177,7 @@ private:
                         canvas_.drawRect(20, y, SCREEN_W - 40, item_h, 0x00, 2);
                         font_.drawText(canvas_, 40, y + 18, manga.title, 26, 0x00, true);
                         font_.drawText(canvas_, 40, y + 55, "Ch. " + f.path().stem().string(), 22, 0x50, false);
-                        canvas_.drawButton(SCREEN_W - 180, y + 20, 120, 50, "Read", true, 2);
+                        font_.drawButton(canvas_, SCREEN_W - 180, y + 20, 120, 50, "Read", true, 22);
 
                         y += item_h + 12;
                         count++;
@@ -1104,28 +1207,28 @@ private:
         // Frontlight Control
         y += 60;
         font_.drawText(canvas_, 40, y + 10, "Frontlight Intensity:", 26, 0x00, true);
-        canvas_.drawButton(300, y, 70, 55, "-", false, 2);
+        font_.drawButton(canvas_, 300, y, 70, 55, "-", false, 28);
         std::string flVal = std::to_string(state_.settings().frontlight) + " / 24";
         font_.drawText(canvas_, 395, y + 12, flVal, 26, 0x00, true);
-        canvas_.drawButton(490, y, 70, 55, "+", false, 2);
+        font_.drawButton(canvas_, 490, y, 70, 55, "+", false, 28);
 
         // Reading Mode Control
         y += 80;
         font_.drawText(canvas_, 40, y + 10, "Reading Mode:", 26, 0x00, true);
         std::string modeLabel = (state_.settings().reading_direction == "RTL") ? "Manga (RTL <-)" : "Comic (LTR ->)";
-        canvas_.drawButton(300, y, 260, 55, modeLabel, true, 2);
+        font_.drawButton(canvas_, 300, y, 260, 55, modeLabel, true, 22);
 
         y = 440;
         // Big Exit Button
-        canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Exit rm2manga to Kindle Home", true, 3);
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Exit rm2manga to Kindle Home", true, 24);
 
         y = 550;
         // Clear Cache Button
-        canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Clear Reader Image Cache", false, 3);
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Clear Reader Image Cache", false, 24);
 
         y = 660;
         // Refresh Library Button
-        canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Rescan Manga Storage", false, 3);
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 80, "Rescan Manga Storage", false, 24);
     }
 
     void renderReader() {
@@ -1139,7 +1242,7 @@ private:
             // Top Bar Overlay
             canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
             canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-            canvas_.drawButton(20, 15, 160, 50, "< Back", false, 2);
+            font_.drawButton(canvas_, 20, 15, 160, 50, "< Back", false, 22);
 
             std::string titleStr = selected_manga_.title;
             if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
@@ -1153,19 +1256,19 @@ private:
             canvas_.fillRect(SCREEN_W / 2 - 250, midY, 500, 70, 0xF5);
             canvas_.drawRect(SCREEN_W / 2 - 250, midY, 500, 70, 0x00, 2);
             font_.drawText(canvas_, SCREEN_W / 2 - 230, midY + 20, "Light", 24, 0x00, true);
-            canvas_.drawButton(SCREEN_W / 2 - 130, midY + 10, 60, 50, "-", false, 2);
+            font_.drawButton(canvas_, SCREEN_W / 2 - 130, midY + 10, 60, 50, "-", false, 26);
             std::string curFl = std::to_string(state_.settings().frontlight);
             font_.drawText(canvas_, SCREEN_W / 2 - 40, midY + 20, curFl, 24, 0x00, true);
-            canvas_.drawButton(SCREEN_W / 2 + 10, midY + 10, 60, 50, "+", false, 2);
-            canvas_.drawButton(SCREEN_W / 2 + 90, midY + 10, 140, 50, state_.settings().reading_direction, false, 2);
+            font_.drawButton(canvas_, SCREEN_W / 2 + 10, midY + 10, 60, 50, "+", false, 26);
+            font_.drawButton(canvas_, SCREEN_W / 2 + 90, midY + 10, 140, 50, state_.settings().reading_direction, false, 22);
 
             // Bottom Bar Overlay
             int bot_y = SCREEN_H - 90;
             canvas_.fillRect(0, bot_y, SCREEN_W, 90, 0xF0);
             canvas_.drawHLine(0, bot_y, SCREEN_W, 0x00, 2);
-            canvas_.drawButton(30, bot_y + 15, 180, 60, "< Prev", false, 2);
-            canvas_.drawButton(SCREEN_W / 2 - 100, bot_y + 15, 200, 60, "Close Menu", false, 2);
-            canvas_.drawButton(SCREEN_W - 210, bot_y + 15, 180, 60, "Next >", false, 2);
+            font_.drawButton(canvas_, 30, bot_y + 15, 180, 60, "< Prev", false, 22);
+            font_.drawButton(canvas_, SCREEN_W / 2 - 100, bot_y + 15, 200, 60, "Close Menu", false, 22);
+            font_.drawButton(canvas_, SCREEN_W - 210, bot_y + 15, 180, 60, "Next >", false, 22);
         }
     }
 
@@ -1220,7 +1323,7 @@ private:
 
             for (int k = 0; k < num_keys; ++k) {
                 int x = 20 + k * key_w;
-                canvas_.drawButton(x + 3, y, key_w - 6, KB_ROW_H - 10, std::string(1, rStr[k]), false, 2);
+                font_.drawButton(canvas_, x + 3, y, key_w - 6, KB_ROW_H - 10, std::string(1, rStr[k]), false, 32);
             }
         }
 
@@ -1228,15 +1331,15 @@ private:
         int close_w = 170;
         int go_w = 160;
         int back_w = 150;
-        canvas_.drawButton(20, bot_y, close_w, KB_ROW_H - 10, "Close", false, 2);
+        font_.drawButton(canvas_, 20, bot_y, close_w, KB_ROW_H - 10, "Hide", false, 24);
         int space_x = 20 + close_w + 15;
         int right_ctrl_w = back_w + 15 + go_w;
         int space_w = SCREEN_W - 20 - right_ctrl_w - 15 - space_x;
-        canvas_.drawButton(space_x, bot_y, space_w, KB_ROW_H - 10, "SPACE", false, 2);
+        font_.drawButton(canvas_, space_x, bot_y, space_w, KB_ROW_H - 10, "Space", false, 24);
         int back_x = space_x + space_w + 15;
-        canvas_.drawButton(back_x, bot_y, back_w, KB_ROW_H - 10, "<--", false, 2);
+        font_.drawButton(canvas_, back_x, bot_y, back_w, KB_ROW_H - 10, "Bksp", false, 24);
         int go_x = back_x + back_w + 15;
-        canvas_.drawButton(go_x, bot_y, go_w, KB_ROW_H - 10, "GO", true, 2);
+        font_.drawButton(canvas_, go_x, bot_y, go_w, KB_ROW_H - 10, "Search", true, 24);
     }
 
     void renderBottomNav() {

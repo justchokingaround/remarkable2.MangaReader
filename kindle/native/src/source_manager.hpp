@@ -45,6 +45,7 @@ private:
 public:
     SourceManager() {
         available_sources_.push_back({"mangadex", "MangaDex", "Official API (Multi-language)"});
+        available_sources_.push_back({"mangafox", "MangaFox", "FanFox & MangaHere (English)"});
         available_sources_.push_back({"mangakatana", "MangaKatana", "Fast Scans (English)"});
     }
 
@@ -53,6 +54,9 @@ public:
     void setActiveSourceId(const std::string& id) { active_source_id_ = id; }
 
     std::vector<UnifiedManga> getPopular(std::string* errOut = nullptr) {
+        if (active_source_id_ == "mangafox") {
+            return fetchMangaFoxPopular(errOut);
+        }
         if (active_source_id_ == "mangakatana") {
             return fetchMangaKatanaPopular(errOut);
         }
@@ -61,6 +65,9 @@ public:
     }
 
     std::vector<UnifiedManga> search(const std::string& query, std::string* errOut = nullptr) {
+        if (active_source_id_ == "mangafox") {
+            return searchMangaFox(query, errOut);
+        }
         if (active_source_id_ == "mangakatana") {
             return searchMangaKatana(query, errOut);
         }
@@ -68,6 +75,9 @@ public:
     }
 
     std::vector<UnifiedChapter> getChapters(const std::string& mangaId, std::string* errOut = nullptr) {
+        if (active_source_id_ == "mangafox") {
+            return fetchMangaFoxChapters(mangaId, errOut);
+        }
         if (active_source_id_ == "mangakatana") {
             return fetchMangaKatanaChapters(mangaId, errOut);
         }
@@ -200,6 +210,82 @@ private:
         }
         std::reverse(chapters.begin(), chapters.end());
         return chapters;
+    }
+
+    std::vector<UnifiedManga> fetchMangaFoxPopular(std::string* errOut) {
+        std::string html;
+        if (!util::httpsGetString("https://www.mangahere.cc/directory/", html, 25) &&
+            !util::httpsGetString("https://fanfox.net/manga/", html, 25)) {
+            if (errOut) *errOut = "Failed connecting to MangaFox";
+            return {};
+        }
+        return parseFoxMangaList(html);
+    }
+
+    std::vector<UnifiedManga> searchMangaFox(const std::string& query, std::string* errOut) {
+        std::string html;
+        std::string url1 = "https://www.mangahere.cc/search?title=" + util::urlEncode(query);
+        std::string url2 = "https://fanfox.net/search?title=" + util::urlEncode(query);
+        if (!util::httpsGetString(url1, html, 25) &&
+            !util::httpsGetString(url2, html, 25)) {
+            if (errOut) *errOut = "Search failed on MangaFox";
+            return {};
+        }
+        return parseFoxMangaList(html);
+    }
+
+    std::vector<UnifiedManga> parseFoxMangaList(const std::string& html) {
+        std::vector<UnifiedManga> list;
+        std::regex itemRegex(R"raw(<a[^>]*href="(/manga/[^"]+/)"[^>]*title="([^"]+)">[\s\S]*?<img[^>]*src="([^"]+)")raw");
+        auto words_begin = std::sregex_iterator(html.begin(), html.end(), itemRegex);
+        auto words_end = std::sregex_iterator();
+
+        for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+            std::smatch match = *i;
+            UnifiedManga m;
+            m.id = match[1].str();
+            m.title = match[2].str();
+            std::string img = match[3].str();
+            if (img.rfind("//", 0) == 0) img = "https:" + img;
+            m.cover_url = img;
+            m.source_id = "mangafox";
+            m.status = "MangaFox";
+            list.push_back(m);
+        }
+        return list;
+    }
+
+    std::vector<UnifiedChapter> fetchMangaFoxChapters(const std::string& mangaId, std::string* errOut) {
+        std::vector<UnifiedChapter> list;
+        std::string slug = mangaId;
+        if (slug.rfind("/manga/", 0) == 0) {
+            slug = slug.substr(7);
+        }
+        while (!slug.empty() && slug.back() == '/') slug.pop_back();
+
+        std::string html;
+        std::string url1 = "https://www.mangahere.cc/manga/" + slug + "/";
+        std::string url2 = "https://fanfox.net/manga/" + slug + "/";
+        if (!util::httpsGetString(url1, html, 25) && !util::httpsGetString(url2, html, 25)) {
+            if (errOut) *errOut = "Failed loading chapters from MangaFox";
+            return {};
+        }
+
+        std::regex chRegex(R"raw(<a[^>]*href="(/manga/[^/]+/(?:v[0-9]+/)?c([0-9.]+)/1\.html)"[^>]*title="([^"]+)")raw");
+        auto words_begin = std::sregex_iterator(html.begin(), html.end(), chRegex);
+        auto words_end = std::sregex_iterator();
+
+        for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+            std::smatch match = *i;
+            UnifiedChapter ch;
+            ch.url = match[1].str();
+            ch.id = match[1].str();
+            ch.chapterNum = match[2].str();
+            ch.title = match[3].str();
+            ch.source_id = "mangafox";
+            list.push_back(ch);
+        }
+        return list;
     }
 };
 
