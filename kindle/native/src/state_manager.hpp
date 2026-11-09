@@ -1,5 +1,6 @@
 #pragma once
 
+#include "types.hpp"
 #include "../../../backend/src/json.hpp"
 #include "../../../backend/src/util.hpp"
 #include <string>
@@ -7,18 +8,11 @@
 #include <vector>
 #include <ctime>
 #include <filesystem>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
 namespace kindle {
-
-struct MangaProgress {
-    std::string manga_title;
-    std::string chapter_title;
-    int page_index = 0;
-    int total_pages = 0;
-    time_t last_read = 0;
-};
 
 struct AppSettings {
     int frontlight = 12; // 0 to 24
@@ -35,6 +29,14 @@ private:
     AppSettings settings_;
     std::string active_manga_;
     std::map<std::string, MangaProgress> progress_map_;
+    std::map<std::string, UnifiedManga> library_map_;
+
+    static std::string makeKey(const std::string& sourceId, const std::string& mangaId, const std::string& title) {
+        if (!sourceId.empty() && !mangaId.empty()) {
+            return sourceId + ":" + mangaId;
+        }
+        return title;
+    }
 
 public:
     StateManager() = default;
@@ -66,6 +68,7 @@ public:
         }
 
         if (root.has("history") && root["history"].isObject()) {
+            progress_map_.clear();
             for (const auto& kv : root["history"].asObject()) {
                 MangaProgress p;
                 p.manga_title = kv.first;
@@ -74,6 +77,23 @@ public:
                 p.total_pages = static_cast<int>(kv.second["total_pages"].integer(0));
                 p.last_read = static_cast<time_t>(kv.second["last_read"].integer(0));
                 progress_map_[kv.first] = p;
+            }
+        }
+
+        if (root.has("library") && root["library"].isArray()) {
+            library_map_.clear();
+            for (const auto& item : root["library"].asArray()) {
+                UnifiedManga m;
+                m.id = item["id"].str();
+                m.title = item["title"].str();
+                m.author = item["author"].str();
+                m.description = item["description"].str();
+                m.status = item["status"].str();
+                m.cover_url = item["cover_url"].str();
+                m.source_id = item["source_id"].str();
+                m.in_library = true;
+                std::string k = makeKey(m.source_id, m.id, m.title);
+                library_map_[k] = m;
             }
         }
     }
@@ -102,8 +122,67 @@ public:
         }
         root["history"] = h;
 
+        Json::Value libArr = Json::Value::array();
+        for (const auto& kv : library_map_) {
+            Json::Value m = Json::Value::object();
+            m["id"] = kv.second.id;
+            m["title"] = kv.second.title;
+            m["author"] = kv.second.author;
+            m["description"] = kv.second.description;
+            m["status"] = kv.second.status;
+            m["cover_url"] = kv.second.cover_url;
+            m["source_id"] = kv.second.source_id;
+            libArr.push(m);
+        }
+        root["library"] = libArr;
+
         std::string jsonStr = Json::stringify(root);
         util::atomicWriteFile(state_file_, jsonStr);
+    }
+
+    bool isInLibrary(const std::string& sourceId, const std::string& mangaId, const std::string& title = "") const {
+        std::string k1 = makeKey(sourceId, mangaId, title);
+        if (library_map_.find(k1) != library_map_.end()) return true;
+        if (!title.empty()) {
+            for (const auto& kv : library_map_) {
+                if (kv.second.title == title) return true;
+            }
+        }
+        return false;
+    }
+
+    bool toggleLibrary(const UnifiedManga& manga) {
+        std::string k = makeKey(manga.source_id, manga.id, manga.title);
+        auto it = library_map_.find(k);
+        if (it == library_map_.end() && !manga.title.empty()) {
+            for (auto iter = library_map_.begin(); iter != library_map_.end(); ++iter) {
+                if (iter->second.title == manga.title) {
+                    it = iter;
+                    break;
+                }
+            }
+        }
+
+        if (it != library_map_.end()) {
+            library_map_.erase(it);
+            save();
+            return false; // Removed from library
+        } else {
+            UnifiedManga copy = manga;
+            copy.in_library = true;
+            library_map_[k] = copy;
+            save();
+            return true; // Added to library
+        }
+    }
+
+    std::vector<UnifiedManga> getLibraryMangas() const {
+        std::vector<UnifiedManga> list;
+        list.reserve(library_map_.size());
+        for (const auto& kv : library_map_) {
+            list.push_back(kv.second);
+        }
+        return list;
     }
 
     void updateProgress(const std::string& manga, const std::string& chapter, int page, int total) {

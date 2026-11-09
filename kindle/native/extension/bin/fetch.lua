@@ -10,13 +10,18 @@ local http = require("socket.http")
 local ltn12 = require("ltn12")
 
 http.TIMEOUT = 30
-local UA = "rm2manga/1.0 (Kindle Oasis)"
+local BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+local MANGADEX_UA = "rm2manga/1.0 (https://github.com/tle2721/remarkable2.MangaReader)"
 
 local function fetch(url, out, referer)
+    if not url or url == "" then return false end
+    if url:sub(1, 2) == "//" then url = "https:" .. url end
+
     local part = out .. ".part"
     local f = io.open(part, "wb")
     if not f then return false end
-    local headers = { ["User-Agent"] = UA }
+    local ua = url:find("mangadex%.org") and MANGADEX_UA or BROWSER_UA
+    local headers = { ["User-Agent"] = ua }
     if referer and referer ~= "" then headers["Referer"] = referer end
     local ok, code = pcall(function()
         local _, c = http.request{

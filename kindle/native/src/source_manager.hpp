@@ -1,40 +1,15 @@
 #pragma once
 
+#include "types.hpp"
 #include "../../../backend/src/mangadex_client.hpp"
 #include "../../../backend/src/json.hpp"
 #include "../../../backend/src/util.hpp"
 #include <string>
 #include <vector>
 #include <regex>
+#include <set>
 
 namespace kindle {
-
-struct SourceInfo {
-    std::string id;
-    std::string name;
-    std::string description;
-};
-
-struct UnifiedManga {
-    std::string id;
-    std::string title;
-    std::string author;
-    std::string description;
-    std::string status;
-    std::string cover_url;
-    std::string source_id;
-};
-
-struct UnifiedChapter {
-    std::string id;
-    std::string chapterNum;
-    std::string title;
-    std::string scanlator;
-    std::string url;
-    std::string source_id;
-    bool isDownloaded = false;
-    std::string localPath;
-};
 
 class SourceManager {
 private:
@@ -285,11 +260,16 @@ private:
         auto words_begin = std::sregex_iterator(html.begin(), html.end(), chRegex);
         auto words_end = std::sregex_iterator();
 
+        std::set<std::string> seenUrls;
         for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
             std::smatch match = *i;
+            std::string link = match[1].str();
+            if (seenUrls.find(link) != seenUrls.end()) continue;
+            seenUrls.insert(link);
+
             UnifiedChapter ch;
-            ch.url = match[1].str();
-            ch.id = match[1].str();
+            ch.url = link;
+            ch.id = link;
             ch.chapterNum = match[2].str();
             ch.title = match[3].str();
             ch.source_id = "mangafox";
@@ -302,16 +282,16 @@ private:
         size_t start = script.find("}('");
         if (start == std::string::npos) return "";
         start += 3;
-        size_t endTemplate = script.find("',", start);
-        if (endTemplate == std::string::npos) return "";
-        std::string templateStr = script.substr(start, endTemplate - start);
 
-        size_t startWords = script.find(",'", endTemplate);
-        if (startWords == std::string::npos) return "";
-        startWords += 2;
-        size_t endWords = script.find("'.split('|')", startWords);
-        if (endWords == std::string::npos) return "";
-        std::string wordsStr = script.substr(startWords, endWords - startWords);
+        std::string tail = script.substr(start);
+        std::regex paramRegex(R"raw(,(\d+),(\d+),'([^']+)'\.split\('\|'\))raw");
+        std::smatch match;
+        if (!std::regex_search(tail, match, paramRegex)) {
+            return "";
+        }
+
+        std::string templateStr = tail.substr(0, match.position(0));
+        std::string wordsStr = match[3].str();
 
         std::vector<std::string> dict;
         std::stringstream ss(wordsStr);
@@ -333,7 +313,7 @@ private:
         };
 
         std::string result;
-        result.reserve(templateStr.size() * 2);
+        result.reserve(templateStr.size() * 3);
         size_t i = 0;
         while (i < templateStr.size()) {
             if (std::isalnum(static_cast<unsigned char>(templateStr[i]))) {
