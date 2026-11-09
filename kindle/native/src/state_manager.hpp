@@ -31,6 +31,7 @@ private:
     std::string active_manga_;
     std::map<std::string, MangaProgress> progress_map_;
     std::map<std::string, UnifiedManga> library_map_;
+    std::set<std::string> unpinned_titles_;
     std::map<std::string, std::vector<UnifiedChapter>> chapters_cache_map_;
 
     static std::string makeKey(const std::string& sourceId, const std::string& mangaId, const std::string& title) {
@@ -124,6 +125,15 @@ public:
             }
         }
 
+        if (root.has("unpinned") && root["unpinned"].isArray()) {
+            unpinned_titles_.clear();
+            for (const auto& item : root["unpinned"].asArray()) {
+                if (!item.str().empty()) {
+                    unpinned_titles_.insert(item.str());
+                }
+            }
+        }
+
         if (root.has("chapters_cache") && root["chapters_cache"].isObject()) {
             chapters_cache_map_.clear();
             for (const auto& kv : root["chapters_cache"].asObject()) {
@@ -200,6 +210,12 @@ public:
         }
         root["library"] = libArr;
 
+        Json::Value unpArr = Json::Value::array();
+        for (const auto& title : unpinned_titles_) {
+            unpArr.push(Json::Value(title));
+        }
+        root["unpinned"] = unpArr;
+
         Json::Value cacheObj = Json::Value::object();
         for (const auto& kv : chapters_cache_map_) {
             Json::Value arr = Json::Value::array();
@@ -271,15 +287,45 @@ public:
 
         if (it != library_map_.end()) {
             library_map_.erase(it);
+            if (!manga.title.empty()) unpinned_titles_.insert(manga.title);
             save();
             return false; // Removed from library
         } else {
             UnifiedManga copy = manga;
             copy.in_library = true;
             library_map_[k] = copy;
+            if (!manga.title.empty()) unpinned_titles_.erase(manga.title);
             save();
             return true; // Added to library
         }
+    }
+
+    bool removeFromLibrary(const UnifiedManga& manga) {
+        std::string k = makeKey(manga.source_id, manga.id, manga.title);
+        bool erased = false;
+        auto it = library_map_.find(k);
+        if (it != library_map_.end()) {
+            library_map_.erase(it);
+            erased = true;
+        }
+        if (!manga.title.empty()) {
+            for (auto iter = library_map_.begin(); iter != library_map_.end();) {
+                if (iter->second.title == manga.title) {
+                    iter = library_map_.erase(iter);
+                    erased = true;
+                } else {
+                    ++iter;
+                }
+            }
+            unpinned_titles_.insert(manga.title);
+        }
+        save();
+        return erased;
+    }
+
+    bool isUnpinned(const std::string& title) const {
+        if (title.empty()) return false;
+        return unpinned_titles_.find(title) != unpinned_titles_.end();
     }
 
     std::vector<UnifiedManga> getLibraryMangas() const {
@@ -394,6 +440,10 @@ public:
             save();
         }
         return erased;
+    }
+
+    bool clearProgress(const std::string& mangaTitle, const std::string& sourceId = "", const std::string& mangaId = "") {
+        return clearHistoryItem(sourceId, mangaId, mangaTitle);
     }
 
     void clearAllHistory() {

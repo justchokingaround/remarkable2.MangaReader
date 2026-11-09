@@ -113,6 +113,11 @@ private:
     std::string download_status_;
     int download_progress_pct_ = 0;
 
+    // Library Removal Modal state
+    bool show_remove_modal_ = false;
+    UnifiedManga manga_to_remove_;
+    int remove_modal_dl_count_ = 0;
+
     // Scroll state
     int scroll_offset_ = 0;
 
@@ -176,6 +181,18 @@ public:
     }
 
 private:
+    int countDownloadedChapters(const std::string& mangaTitle) {
+        if (mangaTitle.empty()) return 0;
+        std::string dirPath = "/mnt/us/manga/" + mangaTitle;
+        std::error_code ec;
+        if (!fs::exists(dirPath, ec)) return 0;
+        int count = 0;
+        for (const auto& f : fs::directory_iterator(dirPath, ec)) {
+            if (f.path().extension() == ".cbz") count++;
+        }
+        return count;
+    }
+
     void loadLibraryFromDisk() {
         library_mangas_.clear();
         std::map<std::string, UnifiedManga> merged;
@@ -193,17 +210,21 @@ private:
             for (const auto& entry : fs::directory_iterator(manga_root, ec)) {
                 if (entry.is_directory()) {
                     std::string dirName = entry.path().filename().string();
-                    if (dirName.empty() || dirName[0] == '.') continue;
+                    if (dirName.empty() || dirName[0] == '.' || dirName == "data") continue;
+                    if (state_.isUnpinned(dirName)) continue;
+
+                    int count = 0;
+                    for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
+                        if (f.path().extension() == ".cbz") count++;
+                    }
+
+                    // If not pinned in library and has 0 cbz files, skip
+                    if (count == 0 && merged.find(dirName) == merged.end()) continue;
 
                     UnifiedManga& m = merged[dirName];
                     if (m.title.empty()) {
                         m.title = dirName;
                         m.id = dirName;
-                    }
-
-                    int count = 0;
-                    for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
-                        if (f.path().extension() == ".cbz") count++;
                     }
                     m.downloaded_count = count;
 
@@ -296,6 +317,12 @@ private:
     }
 
     void handleTouch(int x, int y) {
+        // 0. Remove Manga Confirmation Modal touch if active
+        if (show_remove_modal_) {
+            handleRemoveModalTouch(x, y);
+            return;
+        }
+
         // 1. Bottom Navigation Bar touch (only outside Reader)
         if (y >= SCREEN_H - NAV_H && current_view_ != ViewState::READER) {
             int tab_w = SCREEN_W / 5;
@@ -400,6 +427,92 @@ private:
         }
     }
 
+    void handleRemoveModalTouch(int x, int y) {
+        int dialogW = 860;
+        int dialogH = (remove_modal_dl_count_ > 0) ? 460 : 370;
+        int dialogX = (SCREEN_W - dialogW) / 2;
+        int dialogY = (SCREEN_H - dialogH) / 2;
+
+        if (remove_modal_dl_count_ > 0) {
+            // Button A: [ Keep Files & Remove ] at dialogX + 45, dialogY + 265, w=370, h=60
+            if (x >= dialogX + 45 && x <= dialogX + 415 && y >= dialogY + 265 && y <= dialogY + 325) {
+                state_.removeFromLibrary(manga_to_remove_);
+                show_remove_modal_ = false;
+                status_banner_ = "Removed \"" + manga_to_remove_.title + "\" from Library (files kept)";
+                loadLibraryFromDisk();
+                if (current_view_ == ViewState::DETAIL) {
+                    loadMangaChapters(selected_manga_);
+                }
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+
+            // Button B: [ Delete Files & Remove ] at dialogX + 445, dialogY + 265, w=370, h=60
+            if (x >= dialogX + 445 && x <= dialogX + 815 && y >= dialogY + 265 && y <= dialogY + 325) {
+                state_.removeFromLibrary(manga_to_remove_);
+                state_.clearProgress(manga_to_remove_.title, manga_to_remove_.source_id, manga_to_remove_.id);
+                std::string dirPath = "/mnt/us/manga/" + manga_to_remove_.title;
+                std::error_code ec;
+                fs::remove_all(dirPath, ec);
+
+                show_remove_modal_ = false;
+                status_banner_ = "Deleted files and removed \"" + manga_to_remove_.title + "\"";
+                loadLibraryFromDisk();
+                if (current_view_ == ViewState::DETAIL) {
+                    loadMangaChapters(selected_manga_);
+                }
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+
+            // Button C: [ Cancel ] at dialogX + 245, dialogY + 355, w=370, h=60
+            if (x >= dialogX + 245 && x <= dialogX + 615 && y >= dialogY + 355 && y <= dialogY + 415) {
+                show_remove_modal_ = false;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+        } else {
+            // Button A: [ Remove ] at dialogX + 70, dialogY + 250, w=320, h=60
+            if (x >= dialogX + 70 && x <= dialogX + 390 && y >= dialogY + 250 && y <= dialogY + 310) {
+                state_.removeFromLibrary(manga_to_remove_);
+                std::string dirPath = "/mnt/us/manga/" + manga_to_remove_.title;
+                std::error_code ec;
+                if (fs::exists(dirPath, ec)) {
+                    fs::remove_all(dirPath, ec);
+                }
+
+                show_remove_modal_ = false;
+                status_banner_ = "Removed \"" + manga_to_remove_.title + "\" from Library";
+                loadLibraryFromDisk();
+                if (current_view_ == ViewState::DETAIL) {
+                    loadMangaChapters(selected_manga_);
+                }
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+
+            // Button B: [ Cancel ] at dialogX + 470, dialogY + 250, w=320, h=60
+            if (x >= dialogX + 470 && x <= dialogX + 790 && y >= dialogY + 250 && y <= dialogY + 310) {
+                show_remove_modal_ = false;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+        }
+
+        // Tap outside dialog bounds dismisses dialog
+        if (x < dialogX || x > dialogX + dialogW || y < dialogY || y > dialogY + dialogH) {
+            show_remove_modal_ = false;
+            renderAll();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+    }
+
     void handleLibraryTouch(int x, int y) {
         // Exit App button in header
         if (x >= SCREEN_W - 200 && y >= 10 && y <= TOP_H) {
@@ -424,6 +537,17 @@ private:
         for (size_t i = 0; i < library_mangas_.size(); ++i) {
             int item_y = y_start + static_cast<int>(i) * row_stride - scroll_offset_;
             if (y >= item_y && y < item_y + item_h) {
+                if (x >= SCREEN_W - 340 && x < SCREEN_W - 180) {
+                    // Tap on [ Remove ] button
+                    manga_to_remove_ = library_mangas_[i];
+                    remove_modal_dl_count_ = countDownloadedChapters(manga_to_remove_.title);
+                    show_remove_modal_ = true;
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+
+                // Tap on [ Open ] or card body
                 selected_manga_ = library_mangas_[i];
                 if (!selected_manga_.source_id.empty() && selected_manga_.source_id != "local") {
                     sources_.setActiveSourceId(selected_manga_.source_id);
@@ -758,11 +882,23 @@ private:
 
         // [+ Add to Library] / [✓ In Library] toggle button: x: 425..680, y: TOP_H + 155..TOP_H + 225
         if (x >= 425 && x <= 680 && y >= TOP_H + 155 && y <= TOP_H + 225) {
-            bool inLib = state_.toggleLibrary(selected_manga_);
-            status_banner_ = inLib ? "✓ Added \"" + selected_manga_.title + "\" to Library" : "Removed from Library";
-            renderDetail();
-            display_.refreshFull(WAVEFORM_GC16);
-            return;
+            bool inLib = state_.isInLibrary(selected_manga_.source_id, selected_manga_.id, selected_manga_.title);
+            if (inLib) {
+                manga_to_remove_ = selected_manga_;
+                remove_modal_dl_count_ = countDownloadedChapters(selected_manga_.title);
+                show_remove_modal_ = true;
+                renderAll();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            } else {
+                state_.toggleLibrary(selected_manga_);
+                selected_manga_.in_library = true;
+                status_banner_ = "✓ Added \"" + selected_manga_.title + "\" to Library";
+                loadLibraryFromDisk();
+                renderDetail();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
         }
 
         // Sort button toggle: y: 375 to 445, right aligned
@@ -807,6 +943,42 @@ private:
         }
     }
 
+    struct OfflineCbz {
+        std::string manga_title;
+        std::string chapter_stem;
+        std::string full_path;
+        double mb = 0.0;
+    };
+
+    std::vector<OfflineCbz> getOfflineCbzList() {
+        std::vector<OfflineCbz> list;
+        std::string manga_root = "/mnt/us/manga";
+        std::error_code ec;
+        if (!fs::exists(manga_root, ec)) return list;
+
+        for (const auto& entry : fs::directory_iterator(manga_root, ec)) {
+            if (!entry.is_directory()) continue;
+            std::string title = entry.path().filename().string();
+            if (title.empty() || title[0] == '.' || title == "data") continue;
+
+            for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
+                if (f.path().extension() == ".cbz") {
+                    OfflineCbz item;
+                    item.manga_title = title;
+                    item.chapter_stem = f.path().stem().string();
+                    item.full_path = f.path().string();
+                    item.mb = static_cast<double>(fs::file_size(f.path(), ec)) / (1024.0 * 1024.0);
+                    list.push_back(item);
+                }
+            }
+        }
+        std::sort(list.begin(), list.end(), [](const OfflineCbz& a, const OfflineCbz& b) {
+            if (a.manga_title != b.manga_title) return util::naturalLess(a.manga_title, b.manga_title);
+            return util::naturalLess(a.chapter_stem, b.chapter_stem);
+        });
+        return list;
+    }
+
     void handleDownloadsTouch(int x, int y) {
         // Exit App button in top bar
         if (x >= SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
@@ -818,32 +990,33 @@ private:
         int item_h = 95;
         int item_gap = 12;
         int row_stride = item_h + item_gap;
-        int idx = 0;
+        auto offlineList = getOfflineCbzList();
 
-        for (const auto& manga : library_mangas_) {
-            std::string dirPath = "/mnt/us/manga/" + manga.title;
-            std::error_code ec;
-            if (fs::exists(dirPath, ec)) {
-                for (const auto& f : fs::directory_iterator(dirPath, ec)) {
-                    if (f.path().extension() == ".cbz") {
-                        int item_y = start_y + idx * row_stride - scroll_offset_;
-                        if (y >= item_y && y < item_y + item_h) {
-                            selected_manga_ = manga;
-                            loadMangaChapters(selected_manga_);
-                            for (size_t c = 0; c < selected_chapters_.size(); ++c) {
-                                if (selected_chapters_[c].localPath == f.path().string() ||
-                                    selected_chapters_[c].title == f.path().stem().string()) {
-                                    openChapter(static_cast<int>(c));
-                                    return;
-                                }
-                            }
-                            openChapter(0);
-                            return;
-                        }
-                        idx++;
-                        if (item_y > SCREEN_H - NAV_H - item_h) break;
+        for (size_t i = 0; i < offlineList.size(); ++i) {
+            const auto& item = offlineList[i];
+            int item_y = start_y + static_cast<int>(i) * row_stride - scroll_offset_;
+            if (y >= item_y && y < item_y + item_h) {
+                UnifiedManga m;
+                m.title = item.manga_title;
+                m.id = item.manga_title;
+                for (const auto& libM : library_mangas_) {
+                    if (libM.title == item.manga_title) {
+                        m = libM;
+                        break;
                     }
                 }
+                selected_manga_ = m;
+                loadMangaChapters(selected_manga_);
+                for (size_t c = 0; c < selected_chapters_.size(); ++c) {
+                    if (selected_chapters_[c].localPath == item.full_path ||
+                        selected_chapters_[c].title == item.chapter_stem ||
+                        selected_chapters_[c].chapterNum == item.chapter_stem) {
+                        openChapter(static_cast<int>(c));
+                        return;
+                    }
+                }
+                openChapter(0);
+                return;
             }
         }
     }
@@ -2340,6 +2513,52 @@ private:
         }
 
         renderBottomNav();
+
+        if (show_remove_modal_) {
+            renderRemoveModal();
+        }
+    }
+
+    void renderRemoveModal() {
+        int dialogW = 860;
+        int dialogH = (remove_modal_dl_count_ > 0) ? 460 : 370;
+        int dialogX = (SCREEN_W - dialogW) / 2;
+        int dialogY = (SCREEN_H - dialogH) / 2;
+
+        // Shadow & dialog background
+        canvas_.fillRect(dialogX + 12, dialogY + 12, dialogW, dialogH, 0x66);
+        canvas_.fillRect(dialogX, dialogY, dialogW, dialogH, 0xFF);
+        canvas_.drawRect(dialogX, dialogY, dialogW, dialogH, 0x00, 3);
+
+        // Header Title
+        font_.drawText(canvas_, dialogX + 45, dialogY + 45, "Remove from Library?", 32, 0x00, true);
+        canvas_.drawHLine(dialogX + 45, dialogY + 80, dialogW - 90, 0x00, 2);
+
+        // Manga Title
+        std::string dispTitle = manga_to_remove_.title;
+        if (dispTitle.length() > 38) dispTitle = dispTitle.substr(0, 35) + "...";
+        font_.drawText(canvas_, dialogX + 45, dialogY + 125, dispTitle, 28, 0x00, true);
+
+        if (remove_modal_dl_count_ > 0) {
+            std::string msg = "This manga has " + std::to_string(remove_modal_dl_count_) +
+                              (remove_modal_dl_count_ == 1 ? " chapter" : " chapters") +
+                              " downloaded on device.";
+            font_.drawText(canvas_, dialogX + 45, dialogY + 170, msg, 22, 0x40, false);
+            font_.drawText(canvas_, dialogX + 45, dialogY + 205, "Choose whether to keep offline files or delete them to free space.", 21, 0x60, false);
+
+            // Row 1: Keep Files & Remove | Delete Files & Remove
+            font_.drawButton(canvas_, dialogX + 45, dialogY + 265, 370, 60, "Keep Files & Remove", false, 21);
+            font_.drawButton(canvas_, dialogX + 445, dialogY + 265, 370, 60, "Delete Files & Remove", true, 21);
+
+            // Row 2: Cancel
+            font_.drawButton(canvas_, dialogX + 245, dialogY + 355, 370, 60, "Cancel", false, 22);
+        } else {
+            font_.drawText(canvas_, dialogX + 45, dialogY + 175, "Are you sure you want to remove this manga from your library?", 22, 0x40, false);
+
+            // Row 1: Remove | Cancel
+            font_.drawButton(canvas_, dialogX + 70, dialogY + 250, 320, 60, "Remove", true, 22);
+            font_.drawButton(canvas_, dialogX + 470, dialogY + 250, 320, 60, "Cancel", false, 22);
+        }
     }
 
     void renderLibrary() {
@@ -2410,7 +2629,8 @@ private:
             }
             font_.drawText(canvas_, 135, item_y + 75, sub, 22, 0x60, false);
 
-            font_.drawButton(canvas_, SCREEN_W - 180, item_y + 35, 130, 55, "Open", false, 22);
+            font_.drawButton(canvas_, SCREEN_W - 330, item_y + 35, 135, 55, "Remove", false, 22);
+            font_.drawButton(canvas_, SCREEN_W - 175, item_y + 35, 135, 55, "Open", false, 22);
         }
     }
 
@@ -2941,33 +3161,26 @@ private:
         }
 
         int item_h = 95;
-        int count = 0;
+        int item_gap = 12;
+        int row_stride = item_h + item_gap;
+        auto offlineList = getOfflineCbzList();
 
-        for (const auto& manga : library_mangas_) {
-            std::string dirPath = "/mnt/us/manga/" + manga.title;
-            std::error_code ec;
-            if (fs::exists(dirPath, ec)) {
-                for (const auto& f : fs::directory_iterator(dirPath, ec)) {
-                    if (f.path().extension() == ".cbz") {
-                        canvas_.drawRect(25, curY, SCREEN_W - 50, item_h, 0x00, 2);
-                        font_.drawText(canvas_, 45, curY + 18, manga.title, 26, 0x00, true);
+        for (size_t i = 0; i < offlineList.size(); ++i) {
+            const auto& item = offlineList[i];
+            int item_y = curY + static_cast<int>(i) * row_stride - scroll_offset_;
+            if (item_y + item_h < TOP_H || item_y > SCREEN_H - NAV_H) continue;
 
-                        double mb = static_cast<double>(fs::file_size(f.path(), ec)) / (1024.0 * 1024.0);
-                        char szBuf[64];
-                        snprintf(szBuf, sizeof(szBuf), "Ch. %s  ·  %.1f MB", f.path().stem().string().c_str(), mb);
-                        font_.drawText(canvas_, 45, curY + 55, szBuf, 22, 0x50, false);
+            canvas_.drawRect(25, item_y, SCREEN_W - 50, item_h, 0x00, 2);
+            font_.drawText(canvas_, 45, item_y + 18, item.manga_title, 26, 0x00, true);
 
-                        font_.drawButton(canvas_, SCREEN_W - 190, curY + 20, 130, 52, "Read", true, 22);
+            char szBuf[64];
+            snprintf(szBuf, sizeof(szBuf), "Ch. %s  ·  %.1f MB", item.chapter_stem.c_str(), item.mb);
+            font_.drawText(canvas_, 45, item_y + 55, szBuf, 22, 0x50, false);
 
-                        curY += item_h + 12;
-                        count++;
-                        if (curY > SCREEN_H - NAV_H - item_h) break;
-                    }
-                }
-            }
+            font_.drawButton(canvas_, SCREEN_W - 190, item_y + 20, 130, 52, "Read", true, 22);
         }
 
-        if (count == 0 && !download_active_) {
+        if (offlineList.empty() && !download_active_) {
             font_.drawText(canvas_, SCREEN_W / 2 - 180, 500, "No downloaded chapters found.", 28, 0x60, false);
             font_.drawText(canvas_, SCREEN_W / 2 - 250, 550, "Open any manga and tap 'Download' to save offline.", 22, 0x80, false);
         }
