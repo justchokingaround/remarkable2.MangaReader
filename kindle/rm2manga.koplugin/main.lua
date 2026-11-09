@@ -330,20 +330,17 @@ end
 
 -- Start background chapter download
 function Rm2Manga:startDownload(manga, chapter)
-    local cancelState = { is_cancelled = false }
-    local progressInfo = InfoMessage:new{
-        text = _("Downloading chapter... (tap to cancel)"),
-        dismissable = true,
-        callback = function()
-            cancelState.is_cancelled = true
-        end,
-    }
-    UIManager:show(progressInfo)
-
     Trapper:wrap(function()
+        Trapper:info(T(_("Starting download for %1..."), 
+            (chapter.chapter_num ~= "" and ("Chapter " .. chapter.chapter_num) or "Chapter")))
+
+        local cancelState = { is_cancelled = false }
+
         local function onProgress(current, total)
-            progressInfo:setText(T(_("Downloading page %1 of %2... (tap to cancel)"), current, total))
-            UIManager:forceRePaint()
+            local notDismissed = Trapper:info(T(_("Downloading page %1 of %2... (tap to pause/cancel)"), current, total), true)
+            if notDismissed == false then
+                cancelState.is_cancelled = true
+            end
         end
 
         local function cancelCheck()
@@ -361,7 +358,7 @@ function Rm2Manga:startDownload(manga, chapter)
             cancelCheck
         )
 
-        UIManager:close(progressInfo)
+        Trapper:reset()
 
         if not ok then
             UIManager:show(InfoMessage:new{
@@ -379,9 +376,7 @@ function Rm2Manga:startDownload(manga, chapter)
                 self:openDocument(result)
             end,
         }
-        UIManager:nextTick(function()
-            UIManager:show(readConfirm)
-        end)
+        UIManager:show(readConfirm)
     end)
 end
 
