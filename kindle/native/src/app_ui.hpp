@@ -800,6 +800,119 @@ private:
         }
     }
 
+    int getNextChapterIndex() const {
+        if (current_chapter_idx_ < 0 || selected_chapters_.empty()) return -1;
+        const auto& curCh = selected_chapters_[current_chapter_idx_];
+        double curNum = parseChapterNumber(curCh.chapterNum.empty() ? curCh.title : curCh.chapterNum);
+
+        // 1. If chapter number is known, find the chapter with the smallest number strictly greater than curNum
+        if (curNum >= 0) {
+            int bestIdx = -1;
+            double bestNum = 1e9;
+            for (int i = 0; i < static_cast<int>(selected_chapters_.size()); ++i) {
+                double n = parseChapterNumber(selected_chapters_[i].chapterNum.empty() ? selected_chapters_[i].title : selected_chapters_[i].chapterNum);
+                if (n > curNum + 0.0001 && n < bestNum) {
+                    bestNum = n;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        // 2. Unnumbered chapters fallback based on list ordering
+        if (detail_sort_descending_) {
+            if (current_chapter_idx_ > 0) return current_chapter_idx_ - 1;
+        } else {
+            if (current_chapter_idx_ + 1 < static_cast<int>(selected_chapters_.size())) return current_chapter_idx_ + 1;
+        }
+
+        return -1;
+    }
+
+    int getPrevChapterIndex() const {
+        if (current_chapter_idx_ < 0 || selected_chapters_.empty()) return -1;
+        const auto& curCh = selected_chapters_[current_chapter_idx_];
+        double curNum = parseChapterNumber(curCh.chapterNum.empty() ? curCh.title : curCh.chapterNum);
+
+        // 1. If chapter number is known, find the chapter with the largest number strictly less than curNum
+        if (curNum >= 0) {
+            int bestIdx = -1;
+            double bestNum = -1.0;
+            for (int i = 0; i < static_cast<int>(selected_chapters_.size()); ++i) {
+                double n = parseChapterNumber(selected_chapters_[i].chapterNum.empty() ? selected_chapters_[i].title : selected_chapters_[i].chapterNum);
+                if (n >= 0 && n < curNum - 0.0001 && n > bestNum) {
+                    bestNum = n;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        // 2. Unnumbered chapters fallback based on list ordering
+        if (detail_sort_descending_) {
+            if (current_chapter_idx_ + 1 < static_cast<int>(selected_chapters_.size())) return current_chapter_idx_ + 1;
+        } else {
+            if (current_chapter_idx_ > 0) return current_chapter_idx_ - 1;
+        }
+
+        return -1;
+    }
+
+    void renderReaderToast(const std::string& msg) {
+        int w = 560;
+        int h = 80;
+        int x = (SCREEN_W - w) / 2;
+        int y = SCREEN_H / 2 - 40;
+        canvas_.fillRect(x, y, w, h, 0x00);
+        canvas_.drawRect(x, y, w, h, 0xFF, 2);
+        int tw = font_.measureText(msg, 26, true);
+        font_.drawText(canvas_, x + (w - tw) / 2, y + 25, msg, 26, 0xFF, true);
+        display_.update(x, y, w, h, WAVEFORM_DU, UPDATE_PARTIAL);
+    }
+
+    void renderReaderDownloadProgress(const std::string& status, int pct) {
+        int w = 620;
+        int h = 170;
+        int x = (SCREEN_W - w) / 2;
+        int y = (SCREEN_H - h) / 2;
+
+        canvas_.fillRect(x, y, w, h, 0xFF);
+        canvas_.drawRect(x, y, w, h, 0x00, 3);
+
+        std::string s = status;
+        if (s.length() > 38) s = s.substr(0, 36) + "...";
+        int tw = font_.measureText(s, 24, true);
+        font_.drawText(canvas_, x + (w - tw) / 2, y + 25, s, 24, 0x00, true);
+
+        // Progress bar
+        int bar_w = w - 80;
+        int bar_h = 24;
+        int bar_x = x + 40;
+        int bar_y = y + 75;
+        canvas_.drawRect(bar_x, bar_y, bar_w, bar_h, 0x00, 2);
+        int filled_w = (bar_w - 4) * std::max(0, std::min(100, pct)) / 100;
+        if (filled_w > 0) {
+            canvas_.fillRect(bar_x + 2, bar_y + 2, filled_w, bar_h - 4, 0x00);
+        }
+
+        std::string pctStr = std::to_string(pct) + "%";
+        int ptw = font_.measureText(pctStr, 22, true);
+        font_.drawText(canvas_, x + (w - ptw) / 2, y + 120, pctStr, 22, 0x50, true);
+
+        display_.update(x, y, w, h, WAVEFORM_DU, UPDATE_PARTIAL);
+    }
+
+    void openChapterAtEnd(int chIdx) {
+        if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
+        openChapter(chIdx);
+        if (reader_total_pages_ > 0) {
+            reader_current_page_ = reader_total_pages_ - 1;
+            recordProgress();
+            renderReader();
+            display_.refreshFull(WAVEFORM_GC16);
+        }
+    }
+
     void nextPage() {
         if (reader_current_page_ + 1 < reader_total_pages_) {
             reader_current_page_++;
@@ -810,6 +923,14 @@ private:
                 display_.refreshFull(WAVEFORM_GC16);
             } else {
                 display_.refreshPage();
+            }
+        } else {
+            // Reached the end of the chapter: advance to next chapter
+            int nextIdx = getNextChapterIndex();
+            if (nextIdx >= 0) {
+                openChapter(nextIdx);
+            } else {
+                renderReaderToast("End of manga reached");
             }
         }
     }
@@ -825,6 +946,14 @@ private:
             } else {
                 display_.refreshPage();
             }
+        } else {
+            // Reached start of chapter: go to end of previous chapter
+            int prevIdx = getPrevChapterIndex();
+            if (prevIdx >= 0) {
+                openChapterAtEnd(prevIdx);
+            } else {
+                renderReaderToast("Beginning of manga");
+            }
         }
     }
 
@@ -835,12 +964,22 @@ private:
         }
     }
 
-    void openChapter(int chIdx) {
+    void openChapter(int chIdx, bool autoOpenAfterDownload = true) {
         if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
         current_chapter_idx_ = chIdx;
-        const auto& ch = selected_chapters_[chIdx];
+        auto& ch = selected_chapters_[chIdx];
 
-        if (ch.isDownloaded && fs::exists(ch.localPath)) {
+        fs::path destDir = "/mnt/us/manga/" + selected_manga_.title;
+        std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
+        fs::path cbzFile = destDir / (safeCh + ".cbz");
+        std::error_code ec;
+
+        if (fs::exists(cbzFile, ec)) {
+            ch.isDownloaded = true;
+            ch.localPath = cbzFile.string();
+        }
+
+        if (ch.isDownloaded && fs::exists(ch.localPath, ec)) {
             std::string err;
             std::set<std::string> pinned;
             reader_page_files_ = page_cache_.extractCbz(ch.id.empty() ? ch.title : ch.id, ch.localPath, pinned, &err);
@@ -852,7 +991,7 @@ private:
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
         } else {
-            downloadChapter(chIdx);
+            downloadChapter(chIdx, autoOpenAfterDownload);
         }
     }
 
@@ -860,11 +999,15 @@ private:
         download_active_ = true;
         download_status_ = status;
         download_progress_pct_ = pct;
-        renderDetail();
-        display_.refreshUI(25, 290, SCREEN_W - 50, 85);
+        if (current_view_ == ViewState::READER) {
+            renderReaderDownloadProgress(status, pct);
+        } else {
+            renderDetail();
+            display_.refreshUI(25, 290, SCREEN_W - 50, 85);
+        }
     }
 
-    void downloadChapter(int chIdx) {
+    void downloadChapter(int chIdx, bool autoOpen = false) {
         if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
         auto& ch = selected_chapters_[chIdx];
 
@@ -966,6 +1109,17 @@ private:
         } else {
             download_active_ = false;
             status_banner_ = "Download failed: " + err;
+        }
+
+        if (current_view_ == ViewState::READER || autoOpen) {
+            if (ch.isDownloaded) {
+                openChapter(chIdx, false);
+                return;
+            } else {
+                renderReader();
+                renderReaderToast("Failed to download Ch. " + ch.chapterNum);
+                return;
+            }
         }
 
         renderDetail();
@@ -1741,7 +1895,11 @@ private:
             font_.drawButton(canvas_, 20, 15, 160, 50, "< Back", false, 22);
 
             std::string titleStr = selected_manga_.title;
-            if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
+            if (current_chapter_idx_ >= 0 && current_chapter_idx_ < static_cast<int>(selected_chapters_.size())) {
+                const auto& ch = selected_chapters_[current_chapter_idx_];
+                titleStr += " - Ch. " + (ch.chapterNum.empty() ? ch.title : ch.chapterNum);
+            }
+            if (titleStr.length() > 32) titleStr = titleStr.substr(0, 30) + "...";
             font_.drawText(canvas_, 200, 26, titleStr, 28, 0x00, true);
 
             std::string pageInfo = std::to_string(reader_current_page_ + 1) + " / " + std::to_string(reader_total_pages_);
