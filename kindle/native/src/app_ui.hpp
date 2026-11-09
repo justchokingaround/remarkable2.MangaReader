@@ -833,7 +833,7 @@ private:
             if (y >= item_y && y < item_y + item_h) {
                 selected_manga_ = browse_mangas_[i];
                 status_banner_ = "Loading chapters for " + selected_manga_.title + "...";
-                renderBrowse();
+                renderAll();
                 display_.refreshUI(0, 0, SCREEN_W, TOP_H + 80);
 
                 fetchChapters(selected_manga_.id);
@@ -2115,7 +2115,7 @@ private:
 
     void fetchPopular() {
         status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
-        renderBrowse();
+        renderAll();
         display_.refreshFull(WAVEFORM_GC16);
 
         std::string err;
@@ -2128,7 +2128,7 @@ private:
         }
         scroll_offset_ = 0;
         browse_page_ = 0;
-        renderBrowse();
+        renderAll();
         display_.refreshFull(WAVEFORM_GC16);
     }
 
@@ -2432,7 +2432,7 @@ private:
     void performSearch(const std::string& query) {
         show_keyboard_ = false;
         status_banner_ = "Searching " + sources_.getActiveSourceId() + " for: " + query;
-        renderBrowse();
+        renderAll();
         display_.refreshFull(WAVEFORM_GC16);
 
         std::string err;
@@ -2447,7 +2447,7 @@ private:
         }
         scroll_offset_ = 0;
         browse_page_ = 0;
-        renderBrowse();
+        renderAll();
         display_.refreshFull(WAVEFORM_GC16);
     }
 
@@ -2562,6 +2562,7 @@ private:
     }
 
     void renderLibrary() {
+        canvas_.clear(0xFF);
         // Top Header
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
@@ -2635,6 +2636,7 @@ private:
     }
 
     void renderRecent() {
+        canvas_.clear(0xFF);
         // Top Header
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
@@ -2728,6 +2730,7 @@ private:
     }
 
     void renderBrowse() {
+        canvas_.clear(0xFF);
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
 
@@ -2815,6 +2818,7 @@ private:
     }
 
     void renderSources() {
+        canvas_.clear(0xFF);
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 22, "Manga Sources & Extensions", 32, 0x00, true);
@@ -3139,6 +3143,7 @@ private:
     }
 
     void renderDownloads() {
+        canvas_.clear(0xFF);
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 24, "Downloads & Offline Chapters", 32, 0x00, true);
@@ -3187,6 +3192,7 @@ private:
     }
 
     void renderSettings() {
+        canvas_.clear(0xFF);
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 24, "Settings & Device Controls", 32, 0x00, true);
