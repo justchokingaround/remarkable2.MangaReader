@@ -159,7 +159,6 @@ private:
                         } else if (ev[i].code == ABS_MT_TRACKING_ID) {
                             if (ev[i].value >= 0 && !is_down) {
                                 is_down = true;
-                                pushEvent({EventType::TOUCH_DOWN, cur_x, cur_y});
                             } else if (ev[i].value < 0 && is_down) {
                                 is_down = false;
                                 pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
@@ -168,13 +167,10 @@ private:
                     } else if (ev[i].type == EV_KEY && ev[i].code == BTN_TOUCH) {
                         if (ev[i].value == 1 && !is_down) {
                             is_down = true;
-                            pushEvent({EventType::TOUCH_DOWN, cur_x, cur_y});
                         } else if (ev[i].value == 0 && is_down) {
                             is_down = false;
                             pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
                         }
-                    } else if (ev[i].type == EV_SYN && ev[i].code == SYN_REPORT && is_down) {
-                        pushEvent({EventType::TOUCH_MOVE, cur_x, cur_y});
                     }
                 }
             }
@@ -200,10 +196,11 @@ private:
 
     void pushEvent(const InputEvent& ev) {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        // Limit queue size to avoid latency
-        if (event_queue_.size() < 128) {
-            event_queue_.push(ev);
+        // If queue has pending events, drop oldest so freshest touch events are always handled instantly
+        if (event_queue_.size() >= 16) {
+            event_queue_.pop();
         }
+        event_queue_.push(ev);
     }
 };
 

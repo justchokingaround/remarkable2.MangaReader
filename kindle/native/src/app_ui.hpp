@@ -233,7 +233,11 @@ private:
                 return;
             }
             if (y >= 10 && y <= TOP_H) {
-                if (x >= SCREEN_W - 340 && x < SCREEN_W - 180) {
+                if (x >= SCREEN_W - 155) {
+                    quit();
+                    return;
+                }
+                if (x >= SCREEN_W - 470 && x < SCREEN_W - 325) {
                     show_keyboard_ = false;
                     if (!search_query_.empty()) {
                         performSearch(search_query_);
@@ -243,14 +247,14 @@ private:
                     }
                     return;
                 }
-                if (x >= SCREEN_W - 180) {
+                if (x >= SCREEN_W - 325 && x < SCREEN_W - 155) {
                     show_keyboard_ = false;
                     current_view_ = ViewState::SOURCES;
                     renderAll();
                     display_.refreshFull(WAVEFORM_GC16);
                     return;
                 }
-                if (x < SCREEN_W - 340) {
+                if (x < SCREEN_W - 470) {
                     // Tap on search box while keyboard is up: keep keyboard open
                     return;
                 }
@@ -353,15 +357,18 @@ private:
     }
 
     void handleBrowseTouch(int x, int y) {
-        // Search bar, Search button, or ⚙ Sources clicked
+        // Search bar, Search button, ⚙ Sources, or ✕ Exit clicked
         if (y >= 10 && y <= TOP_H - 10) {
-            if (x >= SCREEN_W - 180) {
+            if (x >= SCREEN_W - 155) {
+                quit();
+                return;
+            } else if (x >= SCREEN_W - 325) {
                 show_keyboard_ = false;
                 current_view_ = ViewState::SOURCES;
                 renderAll();
                 display_.refreshFull(WAVEFORM_GC16);
                 return;
-            } else if (x >= SCREEN_W - 340) {
+            } else if (x >= SCREEN_W - 470) {
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
                 } else {
@@ -422,6 +429,12 @@ private:
     }
 
     void handleDetailTouch(int x, int y) {
+        // Exit App button in top bar
+        if (x >= SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
+            quit();
+            return;
+        }
+
         // Back button (< Back)
         if (x >= 20 && x <= 180 && y >= 15 && y <= 70) {
             current_view_ = (selected_tab_ == 0) ? ViewState::LIBRARY : ViewState::BROWSE;
@@ -474,6 +487,12 @@ private:
     }
 
     void handleDownloadsTouch(int x, int y) {
+        // Exit App button in top bar
+        if (x >= SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
+            quit();
+            return;
+        }
+
         int start_y = TOP_H + 20;
         int item_h = 107;
         int idx = 0;
@@ -500,6 +519,12 @@ private:
     }
 
     void handleSettingsTouch(int x, int y) {
+        // Exit App button in top bar
+        if (x >= SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
+            quit();
+            return;
+        }
+
         // Frontlight slider [-] [+] : y: 195..275 (buttons drawn at y = TOP_H + 35 + 60 = 205, h=55)
         if (y >= 195 && y <= 275) {
             if (x >= 290 && x <= 380) { // [-] drawn at x=300, w=70
@@ -565,8 +590,14 @@ private:
     }
 
     void handleSourcesTouch(int x, int y) {
+        // Exit App button in top bar
+        if (x >= SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
+            quit();
+            return;
+        }
+
         // Back button to Browse
-        if (x >= SCREEN_W - 200 && y >= 10 && y <= TOP_H) {
+        if (x >= SCREEN_W - 330 && x < SCREEN_W - 155 && y >= 10 && y <= TOP_H) {
             current_view_ = ViewState::BROWSE;
             renderAll();
             display_.refreshFull(WAVEFORM_GC16);
@@ -938,7 +969,7 @@ private:
     void renderSearchBarInput() {
         int sb_x = 20;
         int sb_y = 15;
-        int sb_w = SCREEN_W - 360;
+        int sb_w = SCREEN_W - 500;
         int sb_h = 50;
 
         // Clear only the search bar text area to prevent any screen flash or memory corruption
@@ -1153,11 +1184,12 @@ private:
         std::string searchDisplay = search_query_.empty()
             ? (show_keyboard_ ? "_" : "Search manga...")
             : (show_keyboard_ ? search_query_ + "_" : search_query_);
-        canvas_.drawRect(20, 15, SCREEN_W - 360, 50, 0x00, 2);
+        canvas_.drawRect(20, 15, SCREEN_W - 500, 50, 0x00, 2);
         font_.drawText(canvas_, 35, 27, searchDisplay, 24, (search_query_.empty() && !show_keyboard_) ? 0x80 : 0x00, false);
 
-        font_.drawButton(canvas_, SCREEN_W - 330, 15, 130, 50, "Search", true, 22);
-        font_.drawButton(canvas_, SCREEN_W - 180, 15, 160, 50, "⚙ Sources", false, 22);
+        font_.drawButton(canvas_, SCREEN_W - 470, 15, 130, 50, "Search", true, 22);
+        font_.drawButton(canvas_, SCREEN_W - 325, 15, 155, 50, "⚙ Sources", false, 20);
+        font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
         // Source Switcher Pills
         int pill_y = TOP_H + 15;
@@ -1199,7 +1231,8 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 22, "Manga Sources & Extensions", 32, 0x00, true);
-        font_.drawButton(canvas_, SCREEN_W - 190, 15, 170, 50, "< Browse", true, 22);
+        font_.drawButton(canvas_, SCREEN_W - 320, 15, 150, 50, "< Browse", true, 22);
+        font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
         if (!status_banner_.empty()) {
             font_.drawText(canvas_, 35, TOP_H + 12, status_banner_, 22, 0x00, true);
@@ -1250,10 +1283,11 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawButton(canvas_, 20, 15, 140, 50, "< Back", false, 22);
+        font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
         std::string titleStr = selected_manga_.title;
-        if (titleStr.length() > 28) titleStr = titleStr.substr(0, 26) + "...";
-        font_.drawText(canvas_, 190, 24, titleStr, 32, 0x00, true);
+        if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
+        font_.drawText(canvas_, 180, 24, titleStr, 30, 0x00, true);
 
         if (!status_banner_.empty()) {
             font_.drawText(canvas_, 30, TOP_H + 12, status_banner_, 22, 0x00, true);
@@ -1343,6 +1377,7 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 24, "Downloaded Chapters", 32, 0x00, true);
+        font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
         int y = TOP_H + 20;
         int item_h = 95;
@@ -1376,6 +1411,7 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         font_.drawText(canvas_, 30, 24, "Settings & Device Controls", 32, 0x00, true);
+        font_.drawButton(canvas_, SCREEN_W - 155, 15, 135, 50, "✕ Exit", false, 22);
 
         if (!status_banner_.empty()) {
             font_.drawText(canvas_, 40, TOP_H + 15, status_banner_, 22, 0x00, true);
