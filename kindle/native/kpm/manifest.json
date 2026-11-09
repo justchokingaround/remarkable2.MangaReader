@@ -1,0 +1,16 @@
+{
+  "manifest_version": 2,
+  "id": "rm2manga",
+  "name": "rm2manga",
+  "author": "tle2721",
+  "description": "Native Manga Reader and Downloader for Kindle Oasis",
+  "version": [
+    1,
+    0,
+    0
+  ],
+  "dependencies": [],
+  "supported_platforms": [
+    "kindlepw2"
+  ]
+}
