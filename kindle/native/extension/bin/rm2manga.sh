@@ -5,7 +5,10 @@ BASE_DIR="/mnt/us/extensions/rm2manga/bin"
 cd "${BASE_DIR}" || exit 1
 
 # Ensure executable permissions
-chmod +x rm2manga
+chmod +x rm2manga fetch.sh
+
+# Export modern TLS helper for MangaDex HTTP(S) requests
+export RM2MANGA_HTTP_HELPER="${BASE_DIR}/fetch.sh"
 
 # Inhibit Amazon framework
 lipc-set-prop com.lab126.pillow disableEnablePillow disable 2>/dev/null

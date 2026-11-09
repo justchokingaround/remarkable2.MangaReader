@@ -274,9 +274,33 @@ inline std::string getRefererForUrl(const std::string& url) {
     return "";
 }
 
+// Optional external HTTPS helper (used on Kindle, whose stock wget/curl ship an
+// outdated OpenSSL). Invoked as: <helper> get <url> <outfile> [referer]
+inline const char* httpHelper() {
+    const char* h = std::getenv("RM2MANGA_HTTP_HELPER");
+    return (h && *h) ? h : nullptr;
+}
+
 inline bool httpsGetString(const std::string& url, std::string& bodyOut, int timeoutSec = 25) {
     std::string ua = getUserAgentForUrl(url);
     std::string ref = getRefererForUrl(url);
+    if (const char* helper = httpHelper()) {
+        static int counter = 0;
+        std::string tmp = "/tmp/rm2manga_http_" + std::to_string(::getpid()) + "_" +
+                          std::to_string(counter++) + ".body";
+        std::vector<std::string> args = {helper, "get", url, tmp};
+        if (!ref.empty()) args.push_back(ref);
+        auto r = runProcess(args, timeoutSec + 20);
+        std::ifstream in(tmp, std::ios::binary);
+        std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        ::unlink(tmp.c_str());
+        if (r.exitCode == 0 && !data.empty()) {
+            bodyOut = std::move(data);
+            return true;
+        }
+        return false;
+    }
     if (hasBinary("/usr/bin/wget")) {
         std::vector<std::string> args = {
             "/usr/bin/wget", "-q", "-T", std::to_string(timeoutSec),
@@ -322,6 +346,12 @@ inline bool httpsDownloadFile(const std::string& url, const fs::path& dest, int 
     std::string ua = getUserAgentForUrl(url);
     std::string ref = getRefererForUrl(url);
     bool ok = false;
+    if (const char* helper = httpHelper()) {
+        std::vector<std::string> args = {helper, "get", url, dest.string()};
+        if (!ref.empty()) args.push_back(ref);
+        auto r = runProcess(args, timeoutSec + 20);
+        return r.exitCode == 0 && fs::exists(dest, ec) && fs::file_size(dest, ec) > 0;
+    }
     if (hasBinary("/usr/bin/wget")) {
         std::vector<std::string> args = {
             "/usr/bin/wget", "-q", "-T", std::to_string(timeoutSec),

@@ -110,6 +110,12 @@ public:
         return true;
     }
 
+    // Drop taps that queued up while the UI was blocked (e.g. during network calls)
+    void clear() {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        std::queue<InputEvent>().swap(event_queue_);
+    }
+
 private:
     void readerLoop() {
         struct pollfd fds[2];
