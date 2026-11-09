@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+    <information>
+        <name>rm2manga</name>
+        <version>1.0</version>
+        <author>tle2721</author>
+        <id>rm2manga</id>
+    </information>
+    <menus>
+        <menu type="json" file="menu.json"/>
+    </menus>
+</extension>

@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Set working directory
+BASE_DIR="/mnt/us/extensions/rm2manga/bin"
+cd "${BASE_DIR}" || exit 1
+
+# Ensure executable permissions
+chmod +x rm2manga
+
+# Inhibit Amazon framework
+lipc-set-prop com.lab126.pillow disableEnablePillow disable 2>/dev/null
+killall -STOP awesome 2>/dev/null
+
+# Execute rm2manga native binary
+./rm2manga >> /mnt/us/manga/rm2manga_native.log 2>&1
+
+# Restore Amazon framework on exit
+killall -CONT awesome 2>/dev/null
+lipc-set-prop com.lab126.pillow disableEnablePillow enable 2>/dev/null
+lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home 2>/dev/null

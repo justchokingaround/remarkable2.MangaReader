@@ -1,0 +1,10 @@
+{
+    "items": [
+        {
+            "name": "rm2manga (Manga Reader)",
+            "priority": 1,
+            "action": "bin/rm2manga.sh",
+            "params": ""
+        }
+    ]
+}
