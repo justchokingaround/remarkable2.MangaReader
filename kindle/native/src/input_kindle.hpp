@@ -163,6 +163,9 @@ private:
                         } else if (ev[i].code == ABS_MT_TRACKING_ID) {
                             if (ev[i].value >= 0 && !is_down) {
                                 is_down = true;
+                                int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
+                                int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
+                                pushEvent({EventType::TOUCH_DOWN, mx, my});
                             } else if (ev[i].value < 0 && is_down) {
                                 is_down = false;
                                 int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
@@ -174,6 +177,9 @@ private:
                     } else if (ev[i].type == EV_KEY && ev[i].code == BTN_TOUCH) {
                         if (ev[i].value == 1 && !is_down) {
                             is_down = true;
+                            int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
+                            int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
+                            pushEvent({EventType::TOUCH_DOWN, mx, my});
                         } else if (ev[i].value == 0 && is_down) {
                             is_down = false;
                             int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
