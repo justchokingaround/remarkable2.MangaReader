@@ -14,7 +14,7 @@ export SSH_ASKPASS_REQUIRE=force
 export SSH_ASKPASS=/bin/echo
 
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "${KINDLE_PORT}" "root@${KINDLE_IP}" \
-    "mkdir -p ${DEST}/bin ${KPM_DEST} ${SCRIPTLET_DEST} /mnt/us/manga"
+    "killall -9 rm2manga 2>/dev/null || true; rm -f ${DEST}/bin/rm2manga; mkdir -p ${DEST}/bin ${KPM_DEST} ${SCRIPTLET_DEST} /mnt/us/manga"
 
 scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     kindle/native/extension/config.xml kindle/native/extension/menu.json "root@${KINDLE_IP}:${DEST}/"
