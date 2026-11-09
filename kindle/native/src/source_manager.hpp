@@ -9,6 +9,7 @@
 #include <vector>
 #include <regex>
 #include <set>
+#include <unordered_set>
 
 namespace kindle {
 
@@ -439,16 +440,28 @@ private:
 
     std::vector<UnifiedManga> parseFoxMangaList(const std::string& html) {
         std::vector<UnifiedManga> list;
+        std::unordered_set<std::string> seenIds;
         std::regex itemRegex(R"raw(<a[^>]*href="(/manga/[^"]+/)"[^>]*title="([^"]+)">[\s\S]*?<img[^>]*src="([^"]+)")raw");
         auto words_begin = std::sregex_iterator(html.begin(), html.end(), itemRegex);
         auto words_end = std::sregex_iterator();
 
         for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
             std::smatch match = *i;
-            UnifiedManga m;
-            m.id = match[1].str();
-            m.title = match[2].str();
+            std::string id = match[1].str();
             std::string img = match[3].str();
+
+            // Skip star ratings and duplicate matches
+            if (img.find("star-") != std::string::npos || img.find("logo") != std::string::npos) {
+                continue;
+            }
+            if (seenIds.count(id)) {
+                continue;
+            }
+            seenIds.insert(id);
+
+            UnifiedManga m;
+            m.id = id;
+            m.title = match[2].str();
             if (img.rfind("//", 0) == 0) img = "https:" + img;
             m.cover_url = img;
             m.source_id = "mangafox";

@@ -28,8 +28,13 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "${KINDLE_POR
 scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     kindle/native/extension/config.xml kindle/native/extension/menu.json "root@${KINDLE_IP}:${DEST}/"
 
+# Copy binary files
 scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    kindle/native/extension/bin/* "root@${KINDLE_IP}:${DEST}/bin/"
+    kindle/native/extension/bin/rm2manga kindle/native/extension/bin/rm2manga.sh kindle/native/extension/bin/fetch.sh kindle/native/extension/bin/fetch.lua "root@${KINDLE_IP}:${DEST}/bin/"
+
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "${KINDLE_PORT}" "root@${KINDLE_IP}" \
+    "test -f ${DEST}/bin/aidoku-server" || scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    kindle/native/extension/bin/aidoku-server "root@${KINDLE_IP}:${DEST}/bin/"
 
 scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     kindle/native/kpm/* "root@${KINDLE_IP}:${KPM_DEST}/"

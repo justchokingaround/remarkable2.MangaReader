@@ -45,20 +45,23 @@ public:
         if (!envSock) envSock = std::getenv("RM2MANGA_RAKUYOMI_SOCK");
 
         const char* envBin = std::getenv("RM2MANGA_AIDOKU_SERVER");
+        if (!envBin) envBin = std::getenv("RM2MANGA_AIDOKU_BIN");
         if (!envBin) envBin = std::getenv("RM2MANGA_RAKUYOMI_SERVER");
+        if (!envBin) envBin = std::getenv("RM2MANGA_RAKUYOMI_BIN");
 
         const char* envHome = std::getenv("RM2MANGA_AIDOKU_HOME");
         if (!envHome) envHome = std::getenv("RM2MANGA_RAKUYOMI_HOME");
 
         socketPath_ = envSock ? envSock : "/tmp/rakuyomi.sock";
 
+        std::error_code sec;
         if (envBin) {
             serverBin_ = envBin;
         } else if (::access("./backend/aidoku-server", X_OK) == 0) {
             serverBin_ = fs::absolute("./backend/aidoku-server").string();
-        } else if (::access("/mnt/us/extensions/rm2manga/bin/aidoku-server", X_OK) == 0) {
+        } else if (fs::exists("/mnt/us/extensions/rm2manga/bin/aidoku-server", sec)) {
             serverBin_ = "/mnt/us/extensions/rm2manga/bin/aidoku-server";
-        } else if (::access("/mnt/us/koreader/plugins/rakuyomi.koplugin/server", X_OK) == 0) {
+        } else if (fs::exists("/mnt/us/koreader/plugins/rakuyomi.koplugin/server", sec)) {
             serverBin_ = "/mnt/us/koreader/plugins/rakuyomi.koplugin/server";
         } else {
             serverBin_ = "/home/root/xovi/exthome/appload/koreader/plugins/rakuyomi.koplugin/server";
@@ -251,11 +254,13 @@ public:
     }
 
     bool isAvailableOnDisk() const {
-        return ::access(serverBin_.c_str(), X_OK) == 0;
+        std::error_code ec;
+        return fs::exists(serverBin_, ec) || (::access(serverBin_.c_str(), X_OK) == 0);
     }
 
     bool healthCheck(int timeoutSec = 2) {
-        if (!isAvailableOnDisk() && !fs::exists(socketPath_)) return false;
+        std::error_code ec;
+        if (!fs::exists(socketPath_, ec)) return false;
         auto r = rawRequest("GET", "/health-check", "", timeoutSec);
         return r.ok && r.status >= 200 && r.status < 300;
     }
@@ -328,13 +333,17 @@ public:
     }
 
     bool ensureRunning() {
+        if (healthCheck(1)) {
+            return true;
+        }
+
         if (!isAvailableOnDisk()) {
             return false;
         }
         {
             std::lock_guard<std::mutex> lock(spawnMutex_);
             // Ensure no foreign Aidoku instance (e.g. different homeDir) holds /tmp/rakuyomi.sock
-            if (::access(serverBin_.c_str(), X_OK) == 0) {
+            if (isAvailableOnDisk()) {
                 stopRunningServerLocked(true);
             }
         }
