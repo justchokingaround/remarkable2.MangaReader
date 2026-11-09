@@ -157,19 +157,19 @@ private:
                         } else if (ev[i].code == ABS_MT_POSITION_Y || ev[i].code == ABS_Y) {
                             cur_y = ev[i].value;
                         } else if (ev[i].code == ABS_MT_TRACKING_ID) {
-                            if (ev[i].value >= 0) {
+                            if (ev[i].value >= 0 && !is_down) {
                                 is_down = true;
                                 pushEvent({EventType::TOUCH_DOWN, cur_x, cur_y});
-                            } else {
+                            } else if (ev[i].value < 0 && is_down) {
                                 is_down = false;
                                 pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
                             }
                         }
                     } else if (ev[i].type == EV_KEY && ev[i].code == BTN_TOUCH) {
-                        if (ev[i].value == 1) {
+                        if (ev[i].value == 1 && !is_down) {
                             is_down = true;
                             pushEvent({EventType::TOUCH_DOWN, cur_x, cur_y});
-                        } else if (ev[i].value == 0) {
+                        } else if (ev[i].value == 0 && is_down) {
                             is_down = false;
                             pushEvent({EventType::TOUCH_UP, cur_x, cur_y});
                         }
