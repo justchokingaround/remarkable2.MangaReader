@@ -28,8 +28,11 @@ scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/de
 scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     kindle/native/scriptlet/rm2manga.sh "root@${KINDLE_IP}:${SCRIPTLET_DEST}/"
 
+scp -O -P "${KINDLE_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    kindle/native/scriptlet/rm2manga.sh "root@${KINDLE_IP}:/mnt/us/documents/rm2manga.sh"
+
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "${KINDLE_PORT}" "root@${KINDLE_IP}" \
-    "chmod +x ${DEST}/bin/rm2manga.sh ${DEST}/bin/rm2manga ${DEST}/bin/fetch.sh ${KPM_DEST}/launch.sh ${SCRIPTLET_DEST}/rm2manga.sh"
+    "chmod +x ${DEST}/bin/rm2manga.sh ${DEST}/bin/rm2manga ${DEST}/bin/fetch.sh ${KPM_DEST}/launch.sh ${SCRIPTLET_DEST}/rm2manga.sh /mnt/us/documents/rm2manga.sh"
 
 echo "==> rm2manga Native App deployed successfully!"
 echo "==> An rm2manga icon will now appear in your Kindle Home Library!"
