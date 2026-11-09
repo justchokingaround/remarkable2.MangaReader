@@ -366,47 +366,57 @@ private:
     }
 
     void handleReaderTouch(int x, int y) {
-        // 1. Top bar: < Back button or top bar tap
-        if (y <= TOP_H + 15) {
-            if (x <= 250) {
-                // < Back button
-                current_view_ = ViewState::DETAIL;
-                reader_show_overlay_ = false;
-                input_.clear();
-                renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
-                return;
-            }
-            // Tap elsewhere on top bar: toggle bottom overlay menu
-            reader_show_overlay_ = !reader_show_overlay_;
-            renderReader();
-            display_.refreshFull(WAVEFORM_GC16);
-            return;
-        }
-
-        // 2. Bottom overlay menu if open
-        if (reader_show_overlay_ && y >= SCREEN_H - 100) {
-            if (x < SCREEN_W * 0.35) {
-                prevPage();
-            } else if (x > SCREEN_W * 0.65) {
-                nextPage();
-            } else {
+        // 1. If overlay is active
+        if (reader_show_overlay_) {
+            // Top bar
+            if (y <= TOP_H + 15) {
+                if (x <= 250) {
+                    // < Back button
+                    current_view_ = ViewState::DETAIL;
+                    reader_show_overlay_ = false;
+                    input_.clear();
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+                // Tap elsewhere on top bar: close overlay
                 reader_show_overlay_ = false;
                 renderReader();
                 display_.refreshFull(WAVEFORM_GC16);
+                return;
             }
-            return;
-        }
 
-        // 3. Center screen tap: toggle bottom overlay
-        if (x >= SCREEN_W * 0.35 && x <= SCREEN_W * 0.65 && y >= SCREEN_H * 0.35 && y <= SCREEN_H * 0.65) {
-            reader_show_overlay_ = !reader_show_overlay_;
+            // Bottom bar
+            if (y >= SCREEN_H - 100) {
+                if (x < SCREEN_W * 0.35) {
+                    prevPage();
+                } else if (x > SCREEN_W * 0.65) {
+                    nextPage();
+                } else {
+                    reader_show_overlay_ = false;
+                    renderReader();
+                    display_.refreshFull(WAVEFORM_GC16);
+                }
+                return;
+            }
+
+            // Tap in middle dismisses overlay
+            reader_show_overlay_ = false;
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
             return;
         }
 
-        // 4. Page Turn: Left tap = next page (standard RTL manga), Right tap = prev page
+        // 2. Normal Fullscreen Reading:
+        // Top 10% of screen OR Center screen tap: Invoke overlay UI
+        if (y <= 120 || (x >= SCREEN_W * 0.3 && x <= SCREEN_W * 0.7 && y >= SCREEN_H * 0.25 && y <= SCREEN_H * 0.75)) {
+            reader_show_overlay_ = true;
+            renderReader();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        // 3. Page Turn: Left tap = next page (standard RTL manga), Right tap = prev page
         if (x < SCREEN_W * 0.45) {
             nextPage();
         } else if (x > SCREEN_W * 0.55) {
@@ -820,24 +830,25 @@ private:
     void renderReader() {
         canvas_.clear(0xFF);
 
-        // 1. Top Navigation Bar (Always Visible)
-        canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
-        canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-        canvas_.drawButton(20, 15, 160, 50, "< Back", false, 2);
-
-        std::string titleStr = selected_manga_.title;
-        if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
-        canvas_.drawText(200, 26, titleStr, 2, 0x00);
-
-        std::string pageInfo = std::to_string(reader_current_page_ + 1) + " / " + std::to_string(reader_total_pages_);
-        int piW = canvas_.measureTextWidth(pageInfo, 2);
-        canvas_.drawText(SCREEN_W - piW - 40, 26, pageInfo, 2, 0x00);
-
-        // 2. Render actual manga page decoded with stb_image in available area below header
+        // 1. Render actual manga page full screen (edge-to-edge 1264x1680)
         renderReaderPage();
 
-        // 3. Bottom controls if overlay toggled
+        // 2. Overlay controls (only drawn when invoked)
         if (reader_show_overlay_) {
+            // Top Bar Overlay
+            canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
+            canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
+            canvas_.drawButton(20, 15, 160, 50, "< Back", false, 2);
+
+            std::string titleStr = selected_manga_.title;
+            if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
+            canvas_.drawText(200, 26, titleStr, 2, 0x00);
+
+            std::string pageInfo = std::to_string(reader_current_page_ + 1) + " / " + std::to_string(reader_total_pages_);
+            int piW = canvas_.measureTextWidth(pageInfo, 2);
+            canvas_.drawText(SCREEN_W - piW - 40, 26, pageInfo, 2, 0x00);
+
+            // Bottom Bar Overlay
             int bot_y = SCREEN_H - 90;
             canvas_.fillRect(0, bot_y, SCREEN_W, 90, 0xF0);
             canvas_.drawHLine(0, bot_y, SCREEN_W, 0x00, 2);
@@ -867,19 +878,18 @@ private:
             return;
         }
 
-        // Calculate aspect ratio scale to fit Kindle Oasis screen below top bar
-        int maxH = SCREEN_H - TOP_H;
+        // Fullscreen edge-to-edge aspect ratio fit (1264 x 1680)
         double scaleW = static_cast<double>(SCREEN_W) / imgW;
-        double scaleH = static_cast<double>(maxH) / imgH;
+        double scaleH = static_cast<double>(SCREEN_H) / imgH;
         double scale = std::min(scaleW, scaleH);
 
         int targetW = static_cast<int>(imgW * scale);
         int targetH = static_cast<int>(imgH * scale);
         if (targetW > SCREEN_W) targetW = SCREEN_W;
-        if (targetH > maxH) targetH = maxH;
+        if (targetH > SCREEN_H) targetH = SCREEN_H;
 
         int offsetX = (SCREEN_W - targetW) / 2;
-        int offsetY = TOP_H + (maxH - targetH) / 2;
+        int offsetY = (SCREEN_H - targetH) / 2;
 
         canvas_.blitImage(offsetX, offsetY, targetW, targetH, data, imgW, imgH);
         stbi_image_free(data);
