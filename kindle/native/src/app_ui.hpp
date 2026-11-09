@@ -948,10 +948,13 @@ private:
             int row = (y - start_y) / row_stride;
             int idx = chapter_page_ * CHAPTERS_PER_PAGE + row;
             if (idx >= 0 && idx < static_cast<int>(selected_chapters_.size())) {
-                if (selected_chapters_[idx].isDownloaded) {
-                    openChapter(idx);
+                const auto& ch = selected_chapters_[idx];
+                if (!ch.isDownloaded && x >= SCREEN_W - 185) {
+                    // Tap on [ ⬇ Save ]: download for offline reading without auto-opening
+                    downloadChapter(idx, false);
                 } else {
-                    downloadChapter(idx);
+                    // Tap on row or [ ▶ Read ] or [ ✓ Read ]: read chapter immediately
+                    openChapter(idx, true);
                 }
                 return;
             }
@@ -2304,118 +2307,116 @@ private:
         std::string& activeInput = getActiveInputText();
 
         if (row == 0) {
-            // Row 0 (10 keys: 26 + k * 122)
-            int col = (x - 26) / KB_KEY_STEP;
-            int rel = (x - 26) % KB_KEY_STEP;
-            if (col >= 0 && col < 10 && rel < KB_KEY_W) {
-                if (kb_symbols_mode_) {
-                    const char sym0[] = "1234567890";
-                    activeInput += sym0[col];
-                } else {
-                    const char low0[] = "qwertyuiop";
-                    const char up0[] = "QWERTYUIOP";
-                    activeInput += (kb_shift_active_ ? up0[col] : low0[col]);
-                    if (kb_shift_active_) {
-                        kb_shift_active_ = false;
-                        updated_keyboard = true;
-                    }
+            // Row 0 (10 keys): seamless hitboxes from left to right
+            int col = std::max(0, std::min(9, (x - 20) / KB_KEY_STEP));
+            if (kb_symbols_mode_) {
+                const char sym0[] = "1234567890";
+                activeInput += sym0[col];
+            } else {
+                const char low0[] = "qwertyuiop";
+                const char up0[] = "QWERTYUIOP";
+                activeInput += (kb_shift_active_ ? up0[col] : low0[col]);
+                if (kb_shift_active_) {
+                    kb_shift_active_ = false;
+                    updated_keyboard = true;
                 }
-                renderSearchBarInput();
-                if (updated_keyboard) {
-                    renderKeyboard();
-                    display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
-                }
-                return;
             }
+            renderSearchBarInput();
+            if (updated_keyboard) {
+                renderKeyboard();
+                display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+            }
+            return;
         } else if (row == 1) {
-            // Row 1 (9 keys: 87 + k * 122)
-            int col = (x - 87) / KB_KEY_STEP;
-            int rel = (x - 87) % KB_KEY_STEP;
-            if (col >= 0 && col < 9 && rel >= 0 && rel < KB_KEY_W) {
-                if (kb_symbols_mode_) {
-                    const char sym1[] = "-/:;()$&@";
-                    activeInput += sym1[col];
-                } else {
-                    const char low1[] = "asdfghjkl";
-                    const char up1[] = "ASDFGHJKL";
-                    activeInput += (kb_shift_active_ ? up1[col] : low1[col]);
-                    if (kb_shift_active_) {
-                        kb_shift_active_ = false;
-                        updated_keyboard = true;
-                    }
+            // Row 1 (9 keys): seamless hitboxes
+            int col = std::max(0, std::min(8, (x - 70) / KB_KEY_STEP));
+            if (kb_symbols_mode_) {
+                const char sym1[] = "-/:;()$&@";
+                activeInput += sym1[col];
+            } else {
+                const char low1[] = "asdfghjkl";
+                const char up1[] = "ASDFGHJKL";
+                activeInput += (kb_shift_active_ ? up1[col] : low1[col]);
+                if (kb_shift_active_) {
+                    kb_shift_active_ = false;
+                    updated_keyboard = true;
                 }
-                renderSearchBarInput();
-                if (updated_keyboard) {
-                    renderKeyboard();
-                    display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
-                }
-                return;
             }
+            renderSearchBarInput();
+            if (updated_keyboard) {
+                renderKeyboard();
+                display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+            }
+            return;
         } else if (row == 2) {
-            // Row 2: Shift (26..201), 7 keys (209..1055), Bksp (1063..1238)
-            if (x >= 26 && x < 201) {
+            // Row 2: Shift (left), 7 keys (middle), Bksp (right)
+            if (x < 205) {
                 // Shift toggle
                 kb_shift_active_ = !kb_shift_active_;
                 renderKeyboard();
                 display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
                 return;
-            } else if (x >= 1063 && x < 1238) {
+            } else if (x >= 1060) {
                 // Backspace
                 if (!activeInput.empty()) {
                     activeInput.pop_back();
                     renderSearchBarInput();
                 }
                 return;
-            } else if (x >= 209 && x < 1063) {
-                int col = (x - 209) / KB_KEY_STEP;
-                int rel = (x - 209) % KB_KEY_STEP;
-                if (col >= 0 && col < 7 && rel < KB_KEY_W) {
-                    if (kb_symbols_mode_) {
-                        const char sym2[] = ".,?!'\"_";
-                        activeInput += sym2[col];
-                    } else {
-                        const char low2[] = "zxcvbnm";
-                        const char up2[] = "ZXCVBNM";
-                        activeInput += (kb_shift_active_ ? up2[col] : low2[col]);
-                        if (kb_shift_active_) {
-                            kb_shift_active_ = false;
-                            updated_keyboard = true;
-                        }
+            } else {
+                int col = std::max(0, std::min(6, (x - 205) / KB_KEY_STEP));
+                if (kb_symbols_mode_) {
+                    const char sym2[] = ".,?!'\"_";
+                    activeInput += sym2[col];
+                } else {
+                    const char low2[] = "zxcvbnm";
+                    const char up2[] = "ZXCVBNM";
+                    activeInput += (kb_shift_active_ ? up2[col] : low2[col]);
+                    if (kb_shift_active_) {
+                        kb_shift_active_ = false;
+                        updated_keyboard = true;
                     }
-                    renderSearchBarInput();
-                    if (updated_keyboard) {
-                        renderKeyboard();
-                        display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
-                    }
-                    return;
                 }
+                renderSearchBarInput();
+                if (updated_keyboard) {
+                    renderKeyboard();
+                    display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
+                }
+                return;
             }
         } else if (row == 3) {
-            // Row 3: ?123 / ABC (26..201), Close (209..359), Space (367..1048), Search/Done (1056..1238)
-            if (x >= 26 && x < 201) {
+            // Row 3: ?123 | Clear | space | Close | Search
+            if (x < 165) {
                 // Symbols / ABC toggle
                 kb_symbols_mode_ = !kb_symbols_mode_;
                 renderKeyboard();
                 display_.update(0, KB_Y, SCREEN_W, SCREEN_H - NAV_H - KB_Y, WAVEFORM_DU, UPDATE_PARTIAL);
                 return;
-            } else if (x >= 209 && x < 359) {
+            } else if (x < 305) {
+                // Clear entire search input
+                if (!activeInput.empty()) {
+                    activeInput.clear();
+                    renderSearchBarInput();
+                }
+                return;
+            } else if (x < 805) {
+                // Space
+                activeInput += " ";
+                renderSearchBarInput();
+                return;
+            } else if (x < 940) {
                 // Close / Hide
                 show_keyboard_ = false;
                 renderAll();
                 display_.refreshFull(WAVEFORM_GC16);
                 return;
-            } else if (x >= 367 && x < 1048) {
-                // Space
-                activeInput += " ";
-                renderSearchBarInput();
-                return;
-            } else if (x >= 1056 && x < 1238) {
+            } else {
                 // Done or Search
                 show_keyboard_ = false;
                 if (kb_target_ == KeyboardTarget::REPO_URL) {
                     if (!repo_url_input_.empty()) {
                         status_banner_ = "Adding repository URL...";
-                        renderSources();
+                        renderAll();
                         display_.refreshFull(WAVEFORM_GC16);
                         std::string err;
                         if (sources_.addSourceListUrl(repo_url_input_, &err)) {
@@ -3117,13 +3118,14 @@ private:
 
             canvas_.drawRect(30, y, SCREEN_W - 60, item_h, 0x00, 2);
             std::string label = "Ch. " + ch.chapterNum + (ch.title.empty() ? "" : (" - " + ch.title));
-            if (label.length() > 45) label = label.substr(0, 43) + "...";
+            if (label.length() > 38) label = label.substr(0, 36) + "...";
             font_.drawText(canvas_, 50, y + 25, label, 24, 0x00, false);
 
             if (ch.isDownloaded) {
-                font_.drawButton(canvas_, SCREEN_W - 200, y + 13, 140, 50, "Read", true, 22);
+                font_.drawButton(canvas_, SCREEN_W - 190, y + 13, 130, 50, "✓ Read", true, 22);
             } else {
-                font_.drawButton(canvas_, SCREEN_W - 220, y + 13, 160, 50, "Download", false, 20);
+                font_.drawButton(canvas_, SCREEN_W - 325, y + 13, 130, 50, "▶ Read", true, 22);
+                font_.drawButton(canvas_, SCREEN_W - 180, y + 13, 120, 50, "⬇ Save", false, 20);
             }
         }
 
@@ -3336,8 +3338,8 @@ private:
 
     void renderKeyboard() {
         int kb_h = SCREEN_H - NAV_H - KB_Y;
-        canvas_.fillRect(0, KB_Y, SCREEN_W, kb_h, 0xEE);
-        canvas_.drawHLine(0, KB_Y, SCREEN_W, 0x80, 2);
+        canvas_.fillRect(0, KB_Y, SCREEN_W, kb_h, 0xF2);
+        canvas_.drawHLine(0, KB_Y, SCREEN_W, 0x00, 3);
 
         // Row 0 (10 keys: 26 + k * 122)
         int y0 = KB_START_Y;
@@ -3372,7 +3374,7 @@ private:
         // Row 2 (Shift + 7 keys + Bksp)
         int y2 = KB_START_Y + 2 * KB_ROW_H;
         // Shift key
-        renderKey(26, y2, 175, KB_KEY_H, kb_shift_active_ ? "^ Shift" : "Shift", kb_shift_active_, !kb_shift_active_, 26);
+        renderKey(26, y2, 175, KB_KEY_H, kb_shift_active_ ? "⇧ Shift" : "⇧", kb_shift_active_, !kb_shift_active_, 26);
 
         // Middle 7 keys (209 + k * 122)
         if (kb_symbols_mode_) {
@@ -3389,15 +3391,16 @@ private:
         }
 
         // Backspace key
-        renderKey(1063, y2, 175, KB_KEY_H, "Bksp", false, true, 26);
+        renderKey(1063, y2, 175, KB_KEY_H, "⌫", false, true, 28);
 
-        // Row 3 (Bottom row: ?123 / ABC, Close, Space, Search)
+        // Row 3 (Bottom row: ?123 / ABC, Clear, Space, Close, Search)
         int y3 = KB_START_Y + 3 * KB_ROW_H;
-        renderKey(26, y3, 175, KB_KEY_H, kb_symbols_mode_ ? "ABC" : "?123", kb_symbols_mode_, !kb_symbols_mode_, 26);
-        renderKey(209, y3, 150, KB_KEY_H, "Close", false, true, 24);
-        renderKey(367, y3, 681, KB_KEY_H, "space", false, false, 24);
-        std::string actionLabel = (kb_target_ == KeyboardTarget::REPO_URL) ? "Done" : "Search";
-        renderKey(1056, y3, 182, KB_KEY_H, actionLabel, true, false, 26);
+        renderKey(26, y3, 140, KB_KEY_H, kb_symbols_mode_ ? "ABC" : "?123", kb_symbols_mode_, !kb_symbols_mode_, 24);
+        renderKey(174, y3, 130, KB_KEY_H, "Clear", false, true, 22);
+        renderKey(312, y3, 490, KB_KEY_H, "space", false, false, 24);
+        renderKey(810, y3, 130, KB_KEY_H, "Close", false, true, 22);
+        std::string actionLabel = (kb_target_ == KeyboardTarget::REPO_URL) ? "Done ↵" : "Search ↵";
+        renderKey(948, y3, 290, KB_KEY_H, actionLabel, true, false, 26);
     }
 
     void renderBottomNav() {
