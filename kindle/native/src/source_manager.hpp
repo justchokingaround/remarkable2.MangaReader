@@ -199,8 +199,8 @@ private:
 
     std::vector<UnifiedManga> fetchMangaFoxPopular(std::string* errOut) {
         std::string html;
-        if (!util::httpsGetString("https://www.mangahere.cc/directory/", html, 25) &&
-            !util::httpsGetString("https://fanfox.net/manga/", html, 25)) {
+        if (!util::httpsGetString("https://fanfox.net/manga/", html, 25) &&
+            !util::httpsGetString("https://www.mangahere.cc/directory/", html, 25)) {
             if (errOut) *errOut = "Failed connecting to MangaFox";
             return {};
         }
@@ -209,8 +209,8 @@ private:
 
     std::vector<UnifiedManga> searchMangaFox(const std::string& query, std::string* errOut) {
         std::string html;
-        std::string url1 = "https://www.mangahere.cc/search?title=" + util::urlEncode(query);
-        std::string url2 = "https://fanfox.net/search?title=" + util::urlEncode(query);
+        std::string url1 = "https://fanfox.net/search?title=" + util::urlEncode(query);
+        std::string url2 = "https://www.mangahere.cc/search?title=" + util::urlEncode(query);
         if (!util::httpsGetString(url1, html, 25) &&
             !util::httpsGetString(url2, html, 25)) {
             if (errOut) *errOut = "Search failed on MangaFox";
@@ -249,8 +249,8 @@ private:
         while (!slug.empty() && slug.back() == '/') slug.pop_back();
 
         std::string html;
-        std::string url1 = "https://www.mangahere.cc/manga/" + slug + "/";
-        std::string url2 = "https://fanfox.net/manga/" + slug + "/";
+        std::string url1 = "https://fanfox.net/manga/" + slug + "/";
+        std::string url2 = "https://www.mangahere.cc/manga/" + slug + "/";
         if (!util::httpsGetString(url1, html, 25) && !util::httpsGetString(url2, html, 25)) {
             if (errOut) *errOut = "Failed loading chapters from MangaFox";
             return {};
@@ -340,22 +340,32 @@ private:
         std::string html;
         std::string fullUrl = chapterUrl;
         if (fullUrl.rfind("http", 0) != 0) {
-            fullUrl = "https://www.mangahere.cc" + chapterUrl;
+            fullUrl = "https://fanfox.net" + chapterUrl;
         }
 
         std::string primaryUrl = fullUrl;
         std::string primaryError;
-        if (!util::httpsGetString(primaryUrl, html, 25, &primaryError) &&
-            primaryUrl.find("mangahere.cc") != std::string::npos) {
+        if (!util::httpsGetString(primaryUrl, html, 25, &primaryError)) {
             std::string fallbackUrl = primaryUrl;
-            fallbackUrl.replace(fallbackUrl.find("mangahere.cc"), 12, "fanfox.net");
+            if (primaryUrl.find("fanfox.net") != std::string::npos) {
+                size_t pos = fallbackUrl.find("fanfox.net");
+                fallbackUrl.replace(pos, 10, "www.mangahere.cc");
+            } else if (primaryUrl.find("mangahere.cc") != std::string::npos) {
+                size_t pos = fallbackUrl.find("www.mangahere.cc");
+                if (pos != std::string::npos) {
+                    fallbackUrl.replace(pos, 16, "fanfox.net");
+                } else {
+                    pos = fallbackUrl.find("mangahere.cc");
+                    if (pos != std::string::npos) fallbackUrl.replace(pos, 12, "fanfox.net");
+                }
+            }
             std::string fallbackError;
             if (util::httpsGetString(fallbackUrl, html, 25, &fallbackError)) {
                 fullUrl = fallbackUrl;
             } else if (errOut) {
-                *errOut = "Could not load MangaFox chapter HTML (MangaHere: " +
+                *errOut = "Could not load MangaFox chapter HTML (" +
                           (primaryError.empty() ? "request failed" : primaryError) +
-                          "; FanFox: " +
+                          "; fallback: " +
                           (fallbackError.empty() ? "request failed" : fallbackError) + ")";
             }
         }
