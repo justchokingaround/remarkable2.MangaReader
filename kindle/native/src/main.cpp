@@ -10,6 +10,8 @@ void signalHandler(int sig) {
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
     printf("=== Starting rm2manga Native App for Kindle Oasis ===\n");
 
     std::signal(SIGINT, signalHandler);

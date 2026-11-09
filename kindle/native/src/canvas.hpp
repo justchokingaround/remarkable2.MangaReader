@@ -15,30 +15,32 @@ class Canvas {
 private:
     int width_;
     int height_;
+    int stride_;
     uint8_t* buffer_;
 
 public:
-    Canvas(int w, int h, uint8_t* buf) : width_(w), height_(h), buffer_(buf) {}
+    Canvas(int w, int h, int stride, uint8_t* buf) : width_(w), height_(h), stride_(stride), buffer_(buf) {}
 
     int width() const { return width_; }
     int height() const { return height_; }
+    int stride() const { return stride_; }
     uint8_t* buffer() { return buffer_; }
 
     void clear(uint8_t color = 0xFF) {
         if (buffer_) {
-            memset(buffer_, color, width_ * height_);
+            memset(buffer_, color, stride_ * height_);
         }
     }
 
     inline void setPixel(int x, int y, uint8_t color) {
         if (x >= 0 && x < width_ && y >= 0 && y < height_) {
-            buffer_[y * width_ + x] = color;
+            buffer_[y * stride_ + x] = color;
         }
     }
 
     inline uint8_t getPixel(int x, int y) const {
         if (x >= 0 && x < width_ && y >= 0 && y < height_) {
-            return buffer_[y * width_ + x];
+            return buffer_[y * stride_ + x];
         }
         return 0xFF;
     }
@@ -51,7 +53,7 @@ public:
         if (x0 >= x1 || y0 >= y1) return;
 
         for (int row = y0; row < y1; ++row) {
-            memset(buffer_ + (row * width_ + x0), color, x1 - x0);
+            memset(buffer_ + (row * stride_ + x0), color, x1 - x0);
         }
     }
 
@@ -130,7 +132,7 @@ public:
 
             int srcY = (y * srcH) / dstH;
             const uint8_t* srcRow = src + srcY * srcW;
-            uint8_t* dstRow = buffer_ + targetY * width_;
+            uint8_t* dstRow = buffer_ + targetY * stride_;
 
             for (int x = 0; x < dstW; ++x) {
                 int targetX = dstX + x;

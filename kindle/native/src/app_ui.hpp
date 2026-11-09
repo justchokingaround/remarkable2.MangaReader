@@ -52,7 +52,7 @@ public:
 private:
     DisplayZelda display_;
     InputKindle input_;
-    Canvas canvas_{SCREEN_W, SCREEN_H, nullptr};
+    Canvas canvas_{SCREEN_W, SCREEN_H, DisplayZelda::STRIDE, nullptr};
     mangadex::Client mangadex_client_;
 
     ViewState current_view_ = ViewState::LIBRARY;
@@ -84,7 +84,7 @@ public:
 
     bool init() {
         if (!display_.init()) return false;
-        canvas_ = Canvas(SCREEN_W, SCREEN_H, display_.getBuffer());
+        canvas_ = Canvas(SCREEN_W, SCREEN_H, DisplayZelda::STRIDE, display_.getBuffer());
         if (!input_.start()) return false;
 
         loadLibraryFromDisk();

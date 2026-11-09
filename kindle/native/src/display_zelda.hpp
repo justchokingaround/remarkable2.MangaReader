@@ -64,7 +64,8 @@ class DisplayZelda {
 public:
     static constexpr int WIDTH = 1264;
     static constexpr int HEIGHT = 1680;
-    static constexpr size_t FB_SIZE = WIDTH * HEIGHT; // 8bpp Y8
+    static constexpr int STRIDE = 1280; // Hardware line pitch on Kindle Oasis 2/3
+    static constexpr size_t FB_SIZE = STRIDE * HEIGHT; // 1280 * 1680 = 2,150,400 bytes
 
 private:
     int fb_fd_ = -1;
