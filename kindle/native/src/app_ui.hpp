@@ -1151,7 +1151,7 @@ private:
             renderSources();
             display_.refreshFull(WAVEFORM_GC16);
             std::string err;
-            std::string officialUrl = "https://raw.githubusercontent.com/Aidoku-Community/Aidoku-Community/main/index.min.json";
+            std::string officialUrl = "https://raw.githubusercontent.com/Aidoku-Community/legacy-sources/refs/heads/gh-pages/index.min.json";
             if (sources_.addSourceListUrl(officialUrl, &err)) {
                 status_banner_ = "✓ Added Aidoku Community repository!";
                 available_sources_loaded_ = false;

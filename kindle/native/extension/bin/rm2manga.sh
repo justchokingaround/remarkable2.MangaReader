@@ -5,10 +5,17 @@ BASE_DIR="/mnt/us/extensions/rm2manga/bin"
 cd "${BASE_DIR}" || exit 1
 
 # Ensure executable permissions
-chmod +x rm2manga fetch.sh
+chmod +x rm2manga fetch.sh aidoku-server 2>/dev/null || true
 
 # Export modern TLS helper for MangaDex HTTP(S) requests
 export RM2MANGA_HTTP_HELPER="${BASE_DIR}/fetch.sh"
+export RM2MANGA_AIDOKU_BIN="${BASE_DIR}/aidoku-server"
+
+# Ensure Aidoku daemon is running
+mkdir -p /mnt/us/manga/data/aidoku/sources /mnt/us/manga/data/aidoku/downloads
+if ! pgrep -f "aidoku-server" >/dev/null 2>&1; then
+    "${BASE_DIR}/aidoku-server" /mnt/us/manga/data/aidoku >/dev/null 2>&1 &
+fi
 
 # Kill any stale instance
 killall -9 rm2manga 2>/dev/null || true

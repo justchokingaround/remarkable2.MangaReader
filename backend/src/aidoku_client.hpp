@@ -95,7 +95,7 @@ public:
             std::string initial =
                 "{\n"
                 "  \"source_lists\": [\n"
-                "    \"https://raw.githubusercontent.com/Aidoku-Community/Aidoku-Community/main/index.min.json\"\n"
+                "    \"https://raw.githubusercontent.com/Aidoku-Community/legacy-sources/refs/heads/gh-pages/index.min.json\"\n"
                 "  ],\n"
                 "  \"languages\": [\"en\"]\n"
                 "}\n";

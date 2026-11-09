@@ -76,8 +76,17 @@ public:
                 s.id = item["id"].str();
                 s.name = item["name"].str();
                 s.description = item["description"].str();
-                s.version = item["version"].str("1.0");
-                s.language = item["language"].str(item["lang"].str("en"));
+                if (item["version"].isNumber()) {
+                    s.version = "v" + std::to_string(static_cast<int>(item["version"].num()));
+                } else {
+                    s.version = item["version"].str("1.0");
+                }
+                std::string lang = item["language"].str(item["lang"].str());
+                if (lang.empty()) {
+                    auto dot = s.id.find('.');
+                    lang = (dot != std::string::npos) ? s.id.substr(0, dot) : "en";
+                }
+                s.language = lang;
                 s.is_aidoku = true;
                 s.is_installed = false;
                 for (const auto& inst : available_sources_) {
