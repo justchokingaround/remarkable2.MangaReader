@@ -4,8 +4,11 @@
 #include "display_zelda.hpp"
 #include "input_kindle.hpp"
 #include "zip_writer.hpp"
+#include "font_manager.hpp"
+#include "state_manager.hpp"
+#include "source_manager.hpp"
+#include "frontlight.hpp"
 #include "../third_party/stb_image.h"
-#include "../../../backend/src/mangadex_client.hpp"
 #include "../../../backend/src/cbz_extractor.hpp"
 #include <vector>
 #include <string>
@@ -27,26 +30,6 @@ enum class ViewState {
     SETTINGS
 };
 
-struct ChapterItem {
-    std::string id;
-    std::string chapterNum;
-    std::string title;
-    int pages = 0;
-    std::string scanlator;
-    bool isDownloaded = false;
-    std::string localPath;
-};
-
-struct MangaItem {
-    std::string id;
-    std::string title;
-    std::string author;
-    std::string description;
-    std::string status;
-    std::string coverUrl;
-    std::vector<ChapterItem> chapters;
-};
-
 class AppUI {
 public:
     static constexpr int SCREEN_W = DisplayZelda::WIDTH;   // 1264
@@ -58,16 +41,19 @@ private:
     DisplayZelda display_;
     InputKindle input_;
     Canvas canvas_{SCREEN_W, SCREEN_H, DisplayZelda::STRIDE, nullptr};
-    mangadex::Client mangadex_client_;
+    FontManager font_;
+    StateManager state_;
+    SourceManager sources_;
 
     std::atomic<bool> is_running_{true};
     ViewState current_view_ = ViewState::LIBRARY;
     int selected_tab_ = 0; // 0: Library, 1: Browse, 2: Recent, 3: Settings
 
-    // Manga lists
-    std::vector<MangaItem> library_mangas_;
-    std::vector<MangaItem> browse_mangas_;
-    MangaItem selected_manga_;
+    // Manga data
+    std::vector<UnifiedManga> library_mangas_;
+    std::vector<UnifiedManga> browse_mangas_;
+    UnifiedManga selected_manga_;
+    std::vector<UnifiedChapter> selected_chapters_;
 
     // Chapter and reader state
     int current_chapter_idx_ = -1;
@@ -98,6 +84,9 @@ public:
         canvas_ = Canvas(SCREEN_W, SCREEN_H, DisplayZelda::STRIDE, display_.getBuffer());
         if (!input_.start()) return false;
 
+        font_.init();
+        state_.load();
+
         loadLibraryFromDisk();
         renderAll();
         display_.refreshFull(WAVEFORM_GC16);
@@ -111,12 +100,13 @@ public:
             if (input_.pollEvent(ev)) {
                 handleInput(ev);
             } else {
-                usleep(15000); // 15ms sleep to prevent CPU busy loop
+                usleep(15000);
             }
         }
     }
 
     void quit() {
+        state_.save();
         is_running_ = false;
     }
 
@@ -129,28 +119,24 @@ private:
         if (fs::exists(manga_root, ec)) {
             for (const auto& entry : fs::directory_iterator(manga_root, ec)) {
                 if (entry.is_directory()) {
-                    MangaItem m;
-                    m.title = entry.path().filename().string();
-                    m.id = m.title;
+                    std::string dirName = entry.path().filename().string();
+                    if (dirName.empty() || dirName[0] == '.') continue;
 
-                    // Scan chapters
-                    for (const auto& f : fs::directory_iterator(entry.path(), ec)) {
-                        if (f.path().extension() == ".cbz") {
-                            ChapterItem ch;
-                            ch.title = f.path().stem().string();
-                            ch.localPath = f.path().string();
-                            ch.isDownloaded = true;
-                            m.chapters.push_back(ch);
-                        }
+                    UnifiedManga m;
+                    m.title = dirName;
+                    m.id = dirName;
+
+                    // Check for local cover.jpg
+                    fs::path localCover = entry.path() / "cover.jpg";
+                    if (fs::exists(localCover, ec)) {
+                        m.cover_url = localCover.string();
                     }
-                    std::sort(m.chapters.begin(), m.chapters.end(), [](const ChapterItem& a, const ChapterItem& b) {
-                        return util::naturalLess(a.title, b.title);
-                    });
+
                     library_mangas_.push_back(m);
                 }
             }
         }
-        std::sort(library_mangas_.begin(), library_mangas_.end(), [](const MangaItem& a, const MangaItem& b) {
+        std::sort(library_mangas_.begin(), library_mangas_.end(), [](const UnifiedManga& a, const UnifiedManga& b) {
             return util::naturalLess(a.title, b.title);
         });
     }
@@ -158,13 +144,13 @@ private:
     void handleInput(const InputEvent& ev) {
         if (ev.type == EventType::KEY_NEXT_PAGE) {
             if (current_view_ == ViewState::READER) {
-                nextPage();
+                if (state_.settings().button_inverted) prevPage(); else nextPage();
             }
             return;
         }
         if (ev.type == EventType::KEY_PREV_PAGE) {
             if (current_view_ == ViewState::READER) {
-                prevPage();
+                if (state_.settings().button_inverted) nextPage(); else prevPage();
             }
             return;
         }
@@ -193,7 +179,7 @@ private:
                 } else if (selected_tab_ == 1) {
                     current_view_ = ViewState::BROWSE;
                     if (browse_mangas_.empty()) {
-                        status_banner_ = "Loading popular manga from MangaDex...";
+                        status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
                         renderAll();
                         display_.refreshFull(WAVEFORM_GC16);
                         fetchPopular();
@@ -243,13 +229,21 @@ private:
             return;
         }
 
-        int start_y = TOP_H + 20;
+        // Hero Card Resume button: y: 100 to 270
+        MangaProgress hero;
+        if (state_.getHeroManga(hero) && y >= 100 && y <= 270) {
+            resumeHero(hero);
+            return;
+        }
+
+        int start_y = state_.getHeroManga(hero) ? 310 : (TOP_H + 20);
         int item_h = 140;
 
         for (size_t i = 0; i < library_mangas_.size(); ++i) {
             int item_y = start_y + static_cast<int>(i) * item_h - scroll_offset_;
             if (y >= item_y && y < item_y + item_h) {
                 selected_manga_ = library_mangas_[i];
+                loadLocalChapters(selected_manga_.title);
                 current_view_ = ViewState::DETAIL;
                 scroll_offset_ = 0;
                 renderAll();
@@ -259,17 +253,78 @@ private:
         }
     }
 
+    void resumeHero(const MangaProgress& hero) {
+        selected_manga_.title = hero.manga_title;
+        selected_manga_.id = hero.manga_title;
+        loadLocalChapters(hero.manga_title);
+
+        for (size_t i = 0; i < selected_chapters_.size(); ++i) {
+            if (selected_chapters_[i].title == hero.chapter_title ||
+                selected_chapters_[i].chapterNum == hero.chapter_title) {
+                openChapter(static_cast<int>(i));
+                reader_current_page_ = std::min(hero.page_index, std::max(0, reader_total_pages_ - 1));
+                renderReader();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+        }
+        if (!selected_chapters_.empty()) {
+            openChapter(0);
+        }
+    }
+
+    void loadLocalChapters(const std::string& mangaTitle) {
+        selected_chapters_.clear();
+        std::string dirPath = "/mnt/us/manga/" + mangaTitle;
+        std::error_code ec;
+
+        if (fs::exists(dirPath, ec)) {
+            for (const auto& f : fs::directory_iterator(dirPath, ec)) {
+                if (f.path().extension() == ".cbz") {
+                    UnifiedChapter ch;
+                    ch.title = f.path().stem().string();
+                    ch.chapterNum = ch.title;
+                    ch.localPath = f.path().string();
+                    ch.isDownloaded = true;
+                    selected_chapters_.push_back(ch);
+                }
+            }
+        }
+        std::sort(selected_chapters_.begin(), selected_chapters_.end(), [](const UnifiedChapter& a, const UnifiedChapter& b) {
+            return util::naturalLess(a.title, b.title);
+        });
+    }
+
     void handleBrowseTouch(int x, int y) {
         // Search bar clicked
-        if (y >= 10 && y <= TOP_H - 10) {
+        if (y >= 10 && y <= TOP_H - 10 && x < SCREEN_W - 160) {
             show_keyboard_ = true;
             renderAll();
             display_.refreshUI(0, 1100, SCREEN_W, SCREEN_H - 1100);
             return;
         }
 
+        // Source Switcher Pills: y: 90 to 150
+        if (y >= 90 && y <= 150) {
+            const auto& srcList = sources_.getSources();
+            int pill_w = 240;
+            int pill_x = 20;
+
+            for (const auto& s : srcList) {
+                if (x >= pill_x && x <= pill_x + pill_w) {
+                    sources_.setActiveSourceId(s.id);
+                    status_banner_ = "Switched source to " + s.name;
+                    fetchPopular();
+                    renderAll();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+                pill_x += pill_w + 15;
+            }
+        }
+
         // Browse list item clicked
-        int start_y = TOP_H + 70;
+        int start_y = 170;
         int item_h = 140;
 
         for (size_t i = 0; i < browse_mangas_.size(); ++i) {
@@ -278,7 +333,7 @@ private:
                 selected_manga_ = browse_mangas_[i];
                 status_banner_ = "Loading chapters for " + selected_manga_.title + "...";
                 renderBrowse();
-                display_.refreshUI(0, 0, SCREEN_W, TOP_H + 60);
+                display_.refreshUI(0, 0, SCREEN_W, TOP_H + 80);
 
                 fetchChapters(selected_manga_.id);
                 current_view_ = ViewState::DETAIL;
@@ -305,14 +360,12 @@ private:
         int start_y = 390;
         int item_h = 90;
 
-        for (size_t i = 0; i < selected_manga_.chapters.size(); ++i) {
+        for (size_t i = 0; i < selected_chapters_.size(); ++i) {
             int ch_y = start_y + static_cast<int>(i) * item_h - scroll_offset_;
             if (y >= ch_y && y < ch_y + item_h) {
-                // If downloaded or right-side tap: open chapter
-                if (selected_manga_.chapters[i].isDownloaded) {
+                if (selected_chapters_[i].isDownloaded) {
                     openChapter(static_cast<int>(i));
                 } else {
-                    // Tap download button or chapter row to download
                     downloadChapter(static_cast<int>(i));
                 }
                 return;
@@ -321,33 +374,77 @@ private:
     }
 
     void handleDownloadsTouch(int x, int y) {
-        // List recent chapters
         int start_y = TOP_H + 20;
         int item_h = 110;
         int idx = 0;
 
         for (const auto& manga : library_mangas_) {
-            for (size_t c = 0; c < manga.chapters.size(); ++c) {
-                int item_y = start_y + idx * item_h - scroll_offset_;
-                if (y >= item_y && y < item_y + item_h) {
-                    selected_manga_ = manga;
-                    openChapter(static_cast<int>(c));
-                    return;
+            std::string dirPath = "/mnt/us/manga/" + manga.title;
+            std::error_code ec;
+            if (fs::exists(dirPath, ec)) {
+                for (const auto& f : fs::directory_iterator(dirPath, ec)) {
+                    if (f.path().extension() == ".cbz") {
+                        int item_y = start_y + idx * item_h - scroll_offset_;
+                        if (y >= item_y && y < item_y + item_h) {
+                            selected_manga_ = manga;
+                            loadLocalChapters(manga.title);
+                            openChapter(0);
+                            return;
+                        }
+                        idx++;
+                        if (item_y > SCREEN_H - NAV_H - item_h) break;
+                    }
                 }
-                idx++;
             }
         }
     }
 
     void handleSettingsTouch(int x, int y) {
-        // Exit to Kindle Home button: x: 100..SCREEN_W-100, y: 350..430
-        if (x >= 100 && x <= SCREEN_W - 100 && y >= 350 && y <= 430) {
+        // Frontlight slider [-] [+] : y: 220..280
+        if (y >= 220 && y <= 280) {
+            if (x >= 200 && x <= 280) { // [-]
+                int cur = state_.settings().frontlight;
+                cur = std::max(0, cur - 2);
+                state_.settings().frontlight = cur;
+                Frontlight::setIntensity(cur);
+                state_.save();
+                renderSettings();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+            if (x >= 520 && x <= 600) { // [+]
+                int cur = state_.settings().frontlight;
+                cur = std::min(24, cur + 2);
+                state_.settings().frontlight = cur;
+                Frontlight::setIntensity(cur);
+                state_.save();
+                renderSettings();
+                display_.refreshFull(WAVEFORM_GC16);
+                return;
+            }
+        }
+
+        // Reading Mode toggle (RTL / LTR): y: 310..370
+        if (x >= 350 && x <= 550 && y >= 310 && y <= 370) {
+            if (state_.settings().reading_direction == "RTL") {
+                state_.settings().reading_direction = "LTR";
+            } else {
+                state_.settings().reading_direction = "RTL";
+            }
+            state_.save();
+            renderSettings();
+            display_.refreshFull(WAVEFORM_GC16);
+            return;
+        }
+
+        // Exit to Kindle Home button: x: 100..SCREEN_W-100, y: 440..520
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 440 && y <= 520) {
             quit();
             return;
         }
 
-        // Clear Cache button: x: 100..SCREEN_W-100, y: 470..550
-        if (x >= 100 && x <= SCREEN_W - 100 && y >= 470 && y <= 550) {
+        // Clear Cache button: x: 100..SCREEN_W-100, y: 550..630
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 550 && y <= 630) {
             page_cache_.clearAll();
             status_banner_ = "Reader cache cleared successfully!";
             renderSettings();
@@ -355,8 +452,8 @@ private:
             return;
         }
 
-        // Refresh Library button: x: 100..SCREEN_W-100, y: 590..670
-        if (x >= 100 && x <= SCREEN_W - 100 && y >= 590 && y <= 670) {
+        // Refresh Library button: x: 100..SCREEN_W-100, y: 660..740
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 660 && y <= 740) {
             loadLibraryFromDisk();
             status_banner_ = "Library refreshed!";
             renderSettings();
@@ -386,6 +483,28 @@ private:
                 return;
             }
 
+            // Middle Hardware Light Slider: y: 800 to 900
+            if (y >= 800 && y <= 900) {
+                if (x >= 200 && x <= 280) { // Light [-]
+                    int cur = state_.settings().frontlight;
+                    cur = std::max(0, cur - 2);
+                    state_.settings().frontlight = cur;
+                    Frontlight::setIntensity(cur);
+                    renderReader();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+                if (x >= 520 && x <= 600) { // Light [+]
+                    int cur = state_.settings().frontlight;
+                    cur = std::min(24, cur + 2);
+                    state_.settings().frontlight = cur;
+                    Frontlight::setIntensity(cur);
+                    renderReader();
+                    display_.refreshFull(WAVEFORM_GC16);
+                    return;
+                }
+            }
+
             // Bottom bar
             if (y >= SCREEN_H - 100) {
                 if (x < SCREEN_W * 0.35) {
@@ -400,15 +519,15 @@ private:
                 return;
             }
 
-            // Tap in middle dismisses overlay
+            // Tap elsewhere dismisses overlay
             reader_show_overlay_ = false;
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
             return;
         }
 
-        // 2. Normal Fullscreen Reading:
-        // Top 10% of screen OR Center screen tap: Invoke overlay UI
+        // 2. Fullscreen Reading:
+        // Top 10% or Center tap invokes menu
         if (y <= 120 || (x >= SCREEN_W * 0.3 && x <= SCREEN_W * 0.7 && y >= SCREEN_H * 0.25 && y <= SCREEN_H * 0.75)) {
             reader_show_overlay_ = true;
             renderReader();
@@ -416,20 +535,22 @@ private:
             return;
         }
 
-        // 3. Page Turn: Left tap = next page (standard RTL manga), Right tap = prev page
+        // 3. Page Turn (Respects RTL / LTR setting)
+        bool isRTL = (state_.settings().reading_direction == "RTL");
         if (x < SCREEN_W * 0.45) {
-            nextPage();
+            if (isRTL) nextPage(); else prevPage();
         } else if (x > SCREEN_W * 0.55) {
-            prevPage();
+            if (isRTL) prevPage(); else nextPage();
         }
     }
 
     void nextPage() {
         if (reader_current_page_ + 1 < reader_total_pages_) {
             reader_current_page_++;
+            recordProgress();
             renderReader();
             reader_page_turn_counter_++;
-            if (reader_page_turn_counter_ % 8 == 0) {
+            if (reader_page_turn_counter_ % state_.settings().refresh_interval == 0) {
                 display_.refreshFull(WAVEFORM_GC16);
             } else {
                 display_.refreshPage();
@@ -440,9 +561,10 @@ private:
     void prevPage() {
         if (reader_current_page_ > 0) {
             reader_current_page_--;
+            recordProgress();
             renderReader();
             reader_page_turn_counter_++;
-            if (reader_page_turn_counter_ % 8 == 0) {
+            if (reader_page_turn_counter_ % state_.settings().refresh_interval == 0) {
                 display_.refreshFull(WAVEFORM_GC16);
             } else {
                 display_.refreshPage();
@@ -450,10 +572,17 @@ private:
         }
     }
 
+    void recordProgress() {
+        if (current_chapter_idx_ >= 0 && current_chapter_idx_ < static_cast<int>(selected_chapters_.size())) {
+            std::string chName = selected_chapters_[current_chapter_idx_].chapterNum;
+            state_.updateProgress(selected_manga_.title, chName, reader_current_page_, reader_total_pages_);
+        }
+    }
+
     void openChapter(int chIdx) {
-        if (chIdx < 0 || chIdx >= static_cast<int>(selected_manga_.chapters.size())) return;
+        if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
         current_chapter_idx_ = chIdx;
-        const auto& ch = selected_manga_.chapters[chIdx];
+        const auto& ch = selected_chapters_[chIdx];
 
         if (ch.isDownloaded && fs::exists(ch.localPath)) {
             std::string err;
@@ -463,6 +592,7 @@ private:
             reader_current_page_ = 0;
             reader_show_overlay_ = false;
             current_view_ = ViewState::READER;
+            recordProgress();
             renderReader();
             display_.refreshFull(WAVEFORM_GC16);
         } else {
@@ -471,8 +601,8 @@ private:
     }
 
     void downloadChapter(int chIdx) {
-        if (chIdx < 0 || chIdx >= static_cast<int>(selected_manga_.chapters.size())) return;
-        auto& ch = selected_manga_.chapters[chIdx];
+        if (chIdx < 0 || chIdx >= static_cast<int>(selected_chapters_.size())) return;
+        auto& ch = selected_chapters_[chIdx];
 
         status_banner_ = "Downloading Ch. " + ch.chapterNum + "...";
         renderDetail();
@@ -483,7 +613,7 @@ private:
         std::atomic<bool> cancel{false};
         std::string err;
 
-        bool ok = mangadex_client_.downloadChapterPages(ch.id, tmpExtract, &cancel,
+        bool ok = sources_.mangadexClient().downloadChapterPages(ch.id, tmpExtract, &cancel,
             [this](const std::string& msg, int pct) {
                 status_banner_ = msg + " (" + std::to_string(pct) + "%)";
                 renderDetail();
@@ -500,7 +630,6 @@ private:
             std::string safeCh = ch.chapterNum.empty() ? "chapter" : ("chapter_" + ch.chapterNum);
             fs::path cbzFile = destDir / (safeCh + ".cbz");
 
-            // Pack images into CBZ
             ZipStoreWriter zip;
             if (zip.open(cbzFile.string())) {
                 std::vector<fs::path> pageFiles;
@@ -538,44 +667,18 @@ private:
     }
 
     void fetchPopular() {
-        status_banner_ = "Loading popular manga from MangaDex...";
+        status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
         renderBrowse();
         display_.refreshUI(0, 0, SCREEN_W, TOP_H + 40);
 
         std::string err;
-        auto jsonList = mangadex_client_.queryMangaList("", "popular", &err);
-        browse_mangas_.clear();
-
-        if (jsonList.isArray()) {
-            for (const auto& item : jsonList.asArray()) {
-                MangaItem m;
-                m.id = item["id"].str();
-                m.title = item["title"].str();
-                m.author = item["author"].str();
-                m.description = item["description"].str();
-                m.status = item["status"].str();
-                m.coverUrl = item["cover_url"].str();
-                browse_mangas_.push_back(m);
-            }
-        }
+        browse_mangas_ = sources_.getPopular(&err);
         status_banner_.clear();
     }
 
     void fetchChapters(const std::string& mangaId) {
         std::string err;
-        auto jsonFeed = mangadex_client_.getChapters(mangaId, &err);
-        selected_manga_.chapters.clear();
-
-        if (jsonFeed.isArray()) {
-            for (const auto& item : jsonFeed.asArray()) {
-                ChapterItem ch;
-                ch.id = item["id"].str();
-                ch.chapterNum = std::to_string(static_cast<int>(item["chapter_num"].num(0.0)));
-                ch.title = item["title"].str();
-                ch.scanlator = item["scanlator"].str();
-                selected_manga_.chapters.push_back(ch);
-            }
-        }
+        selected_chapters_ = sources_.getChapters(mangaId, &err);
     }
 
     void handleKeyboardTouch(int x, int y) {
@@ -584,22 +687,18 @@ private:
         if (row < 0 || row > 4) return;
 
         if (row == 4) {
-            if (x < 300) { // Close
+            if (x < 300) {
                 show_keyboard_ = false;
-            } else if (x > SCREEN_W - 300) { // Search
+            } else if (x > SCREEN_W - 300) {
                 show_keyboard_ = false;
                 if (!search_query_.empty()) {
                     performSearch(search_query_);
                 }
-            } else { // Space
+            } else {
                 search_query_ += " ";
             }
         } else {
-            const char* rows[] = {
-                "QWERTYUIOP",
-                "ASDFGHJKL",
-                "ZXCVBNM"
-            };
+            const char* rows[] = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
             if (row < 3) {
                 std::string rStr = rows[row];
                 int key_w = SCREEN_W / (static_cast<int>(rStr.length()) + 1);
@@ -619,32 +718,18 @@ private:
     }
 
     void performSearch(const std::string& query) {
-        status_banner_ = "Searching MangaDex for: " + query;
+        status_banner_ = "Searching " + sources_.getActiveSourceId() + " for: " + query;
         renderBrowse();
         display_.refreshUI(0, 0, SCREEN_W, TOP_H + 40);
 
         std::string err;
-        auto jsonList = mangadex_client_.queryMangaList(query, "search", &err);
-        browse_mangas_.clear();
-
-        if (jsonList.isArray()) {
-            for (const auto& item : jsonList.asArray()) {
-                MangaItem m;
-                m.id = item["id"].str();
-                m.title = item["title"].str();
-                m.author = item["author"].str();
-                m.description = item["description"].str();
-                m.status = item["status"].str();
-                m.coverUrl = item["cover_url"].str();
-                browse_mangas_.push_back(m);
-            }
-        }
+        browse_mangas_ = sources_.search(query, &err);
         status_banner_.clear();
         renderBrowse();
         display_.refreshFull(WAVEFORM_GC16);
     }
 
-    // --- RENDER PASSES ---
+    // --- RENDER PASSES WITH EMBER TYPOGRAPHY ---
     void renderAll() {
         canvas_.clear(0xFF);
 
@@ -674,26 +759,54 @@ private:
         // Top Header
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-        canvas_.drawText(30, 25, "rm2manga - Library", 3, 0x00);
+        font_.drawText(canvas_, 30, 22, "rm2manga", 34, 0x00, true);
+        font_.drawText(canvas_, 220, 27, "Library", 26, 0x60, false);
         canvas_.drawButton(SCREEN_W - 190, 15, 160, 50, "Exit App", false, 2);
 
+        // Hero Card: Continue Reading
+        MangaProgress hero;
+        int listStartY = TOP_H + 20;
+
+        if (state_.getHeroManga(hero)) {
+            int heroY = TOP_H + 15;
+            int heroH = 150;
+            canvas_.drawRect(25, heroY, SCREEN_W - 50, heroH, 0x00, 2);
+            canvas_.fillRect(26, heroY + 1, SCREEN_W - 52, heroH - 2, 0xFA);
+
+            // Thumbnail placeholder
+            canvas_.fillRect(40, heroY + 15, 80, 120, 0xD0);
+            canvas_.drawRect(40, heroY + 15, 80, 120, 0x00, 2);
+
+            font_.drawText(canvas_, 140, heroY + 20, "CONTINUE READING", 20, 0x60, true);
+            font_.drawText(canvas_, 140, heroY + 50, hero.manga_title, 30, 0x00, true);
+
+            std::string sub = "Ch. " + hero.chapter_title + " • Page " + std::to_string(hero.page_index + 1) + " of " + std::to_string(hero.total_pages);
+            font_.drawText(canvas_, 140, heroY + 95, sub, 24, 0x40, false);
+
+            canvas_.drawButton(SCREEN_W - 220, heroY + 45, 170, 60, "Resume >", true, 2);
+            listStartY = heroY + heroH + 25;
+        }
+
         if (library_mangas_.empty()) {
-            canvas_.drawText(SCREEN_W / 2 - 250, 450, "Your library is empty.", 3, 0x50);
-            canvas_.drawText(SCREEN_W / 2 - 380, 530, "Tap 'Browse' below to search & download manga!", 2, 0x70);
+            font_.drawText(canvas_, SCREEN_W / 2 - 140, 600, "Your library is empty.", 30, 0x60, true);
+            font_.drawText(canvas_, SCREEN_W / 2 - 250, 650, "Tap 'Browse' below to search & download manga!", 24, 0x80, false);
             return;
         }
 
-        int y = TOP_H + 20;
+        font_.drawText(canvas_, 30, listStartY - 5, "Downloaded Manga (" + std::to_string(library_mangas_.size()) + ")", 24, 0x50, true);
+
+        int y = listStartY + 30;
         int item_h = 130;
 
         for (const auto& manga : library_mangas_) {
-            canvas_.drawRect(20, y, SCREEN_W - 40, item_h, 0x00, 2);
-            canvas_.fillRect(30, y + 10, 80, 110, 0xD0);
-            canvas_.drawRect(30, y + 10, 80, 110, 0x00, 2);
+            canvas_.drawRect(25, y, SCREEN_W - 50, item_h, 0x00, 2);
+            canvas_.fillRect(35, y + 10, 80, 110, 0xD0);
+            canvas_.drawRect(35, y + 10, 80, 110, 0x00, 2);
 
-            canvas_.drawText(130, y + 25, manga.title, 2, 0x00);
-            std::string sub = std::to_string(manga.chapters.size()) + " chapters downloaded";
-            canvas_.drawText(130, y + 75, sub, 2, 0x60);
+            font_.drawText(canvas_, 135, y + 25, manga.title, 28, 0x00, true);
+            font_.drawText(canvas_, 135, y + 75, "Ready to read", 22, 0x70, false);
+
+            canvas_.drawButton(SCREEN_W - 180, y + 35, 130, 55, "Open", false, 2);
 
             y += item_h + 15;
             if (y > SCREEN_H - NAV_H - item_h) break;
@@ -704,25 +817,43 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
 
-        std::string searchDisplay = search_query_.empty() ? "Tap here to search MangaDex..." : search_query_;
-        canvas_.drawRect(20, 15, SCREEN_W - 40, 50, 0x00, 2);
-        canvas_.drawText(40, 26, searchDisplay, 2, search_query_.empty() ? 0x80 : 0x00);
+        std::string searchDisplay = search_query_.empty() ? "Search manga..." : search_query_;
+        canvas_.drawRect(20, 15, SCREEN_W - 200, 50, 0x00, 2);
+        font_.drawText(canvas_, 40, 27, searchDisplay, 24, search_query_.empty() ? 0x80 : 0x00, false);
 
-        if (!status_banner_.empty()) {
-            canvas_.drawText(30, TOP_H + 20, status_banner_, 2, 0x00);
+        canvas_.drawButton(SCREEN_W - 160, 15, 140, 50, "Search", true, 2);
+
+        // Source Switcher Pills
+        int pill_y = TOP_H + 15;
+        font_.drawText(canvas_, 25, pill_y + 10, "Source:", 22, 0x50, true);
+
+        int pill_x = 120;
+        for (const auto& s : sources_.getSources()) {
+            bool active = (s.id == sources_.getActiveSourceId());
+            canvas_.drawButton(pill_x, pill_y, 200, 45, s.name, active, 2);
+            pill_x += 215;
         }
 
-        int y = TOP_H + 60;
+        if (!status_banner_.empty()) {
+            font_.drawText(canvas_, 30, pill_y + 65, status_banner_, 22, 0x00, true);
+        }
+
+        int y = pill_y + 60;
         int item_h = 130;
 
         for (const auto& manga : browse_mangas_) {
-            canvas_.drawRect(20, y, SCREEN_W - 40, item_h, 0x00, 2);
-            canvas_.fillRect(30, y + 10, 80, 110, 0xD0);
-            canvas_.drawRect(30, y + 10, 80, 110, 0x00, 2);
+            canvas_.drawRect(25, y, SCREEN_W - 50, item_h, 0x00, 2);
+            canvas_.fillRect(35, y + 10, 80, 110, 0xD0);
+            canvas_.drawRect(35, y + 10, 80, 110, 0x00, 2);
 
-            canvas_.drawText(130, y + 25, manga.title, 2, 0x00);
-            std::string sub = (manga.author.empty() ? "MangaDex" : manga.author) + " • " + manga.status;
-            canvas_.drawText(130, y + 75, sub, 2, 0x60);
+            std::string t = manga.title;
+            if (t.length() > 32) t = t.substr(0, 30) + "...";
+            font_.drawText(canvas_, 135, y + 22, t, 28, 0x00, true);
+
+            std::string sub = (manga.author.empty() ? sources_.getActiveSourceId() : manga.author) + " • " + manga.status;
+            font_.drawText(canvas_, 135, y + 70, sub, 22, 0x60, false);
+
+            canvas_.drawButton(SCREEN_W - 160, y + 35, 120, 55, "View", false, 2);
 
             y += item_h + 15;
             if (y > SCREEN_H - NAV_H - item_h) break;
@@ -733,29 +864,32 @@ private:
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
         canvas_.drawButton(20, 15, 140, 50, "< Back", false, 2);
-        canvas_.drawText(190, 25, selected_manga_.title, 3, 0x00);
+
+        std::string titleStr = selected_manga_.title;
+        if (titleStr.length() > 28) titleStr = titleStr.substr(0, 26) + "...";
+        font_.drawText(canvas_, 190, 24, titleStr, 32, 0x00, true);
 
         if (!status_banner_.empty()) {
-            canvas_.drawText(30, TOP_H + 10, status_banner_, 2, 0x00);
+            font_.drawText(canvas_, 30, TOP_H + 12, status_banner_, 22, 0x00, true);
         }
 
-        canvas_.fillRect(30, TOP_H + 30, 150, 220, 0xD0);
-        canvas_.drawRect(30, TOP_H + 30, 150, 220, 0x00, 2);
+        canvas_.fillRect(30, TOP_H + 35, 150, 220, 0xD0);
+        canvas_.drawRect(30, TOP_H + 35, 150, 220, 0x00, 2);
 
-        canvas_.drawText(210, TOP_H + 40, selected_manga_.title, 2, 0x00);
-        canvas_.drawText(210, TOP_H + 85, "Author: " + (selected_manga_.author.empty() ? "Unknown" : selected_manga_.author), 2, 0x40);
-        canvas_.drawText(210, TOP_H + 125, "Status: " + selected_manga_.status, 2, 0x40);
+        font_.drawText(canvas_, 210, TOP_H + 45, selected_manga_.title, 30, 0x00, true);
+        font_.drawText(canvas_, 210, TOP_H + 95, "Author: " + (selected_manga_.author.empty() ? "MangaDex" : selected_manga_.author), 24, 0x40, false);
+        font_.drawText(canvas_, 210, TOP_H + 135, "Status: " + selected_manga_.status, 24, 0x40, false);
 
-        canvas_.drawText(30, 340, "Chapters (" + std::to_string(selected_manga_.chapters.size()) + ")", 3, 0x00);
-        canvas_.drawHLine(30, 375, SCREEN_W - 60, 0x00, 2);
+        font_.drawText(canvas_, 30, 345, "Chapters (" + std::to_string(selected_chapters_.size()) + ")", 28, 0x00, true);
+        canvas_.drawHLine(30, 380, SCREEN_W - 60, 0x00, 2);
 
-        int y = 390;
+        int y = 395;
         int item_h = 80;
 
-        for (const auto& ch : selected_manga_.chapters) {
+        for (const auto& ch : selected_chapters_) {
             canvas_.drawRect(30, y, SCREEN_W - 60, item_h, 0x00, 2);
             std::string label = "Ch. " + ch.chapterNum + (ch.title.empty() ? "" : (" - " + ch.title));
-            canvas_.drawText(50, y + 25, label, 2, 0x00);
+            font_.drawText(canvas_, 50, y + 25, label, 24, 0x00, false);
 
             if (ch.isDownloaded) {
                 canvas_.drawButton(SCREEN_W - 200, y + 15, 120, 50, "Read", true, 2);
@@ -771,60 +905,73 @@ private:
     void renderDownloads() {
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-        canvas_.drawText(30, 25, "Recent Chapters", 3, 0x00);
+        font_.drawText(canvas_, 30, 24, "Downloaded Chapters", 32, 0x00, true);
 
         int y = TOP_H + 20;
         int item_h = 95;
         int count = 0;
 
         for (const auto& manga : library_mangas_) {
-            for (const auto& ch : manga.chapters) {
-                canvas_.drawRect(20, y, SCREEN_W - 40, item_h, 0x00, 2);
-                canvas_.drawText(40, y + 18, manga.title, 2, 0x00);
-                canvas_.drawText(40, y + 55, "Ch. " + ch.title, 2, 0x50);
-                canvas_.drawButton(SCREEN_W - 180, y + 20, 120, 50, "Read", true, 2);
+            std::string dirPath = "/mnt/us/manga/" + manga.title;
+            std::error_code ec;
+            if (fs::exists(dirPath, ec)) {
+                for (const auto& f : fs::directory_iterator(dirPath, ec)) {
+                    if (f.path().extension() == ".cbz") {
+                        canvas_.drawRect(20, y, SCREEN_W - 40, item_h, 0x00, 2);
+                        font_.drawText(canvas_, 40, y + 18, manga.title, 26, 0x00, true);
+                        font_.drawText(canvas_, 40, y + 55, "Ch. " + f.path().stem().string(), 22, 0x50, false);
+                        canvas_.drawButton(SCREEN_W - 180, y + 20, 120, 50, "Read", true, 2);
 
-                y += item_h + 12;
-                count++;
-                if (y > SCREEN_H - NAV_H - item_h) break;
+                        y += item_h + 12;
+                        count++;
+                        if (y > SCREEN_H - NAV_H - item_h) break;
+                    }
+                }
             }
-            if (y > SCREEN_H - NAV_H - item_h) break;
         }
 
         if (count == 0) {
-            canvas_.drawText(SCREEN_W / 2 - 250, 450, "No downloaded chapters found.", 3, 0x50);
+            font_.drawText(canvas_, SCREEN_W / 2 - 180, 500, "No downloaded chapters found.", 28, 0x60, false);
         }
     }
 
     void renderSettings() {
         canvas_.fillRect(0, 0, SCREEN_W, TOP_H, 0xF5);
         canvas_.drawHLine(0, TOP_H, SCREEN_W, 0x00, 2);
-        canvas_.drawText(30, 25, "Settings & Device Info", 3, 0x00);
+        font_.drawText(canvas_, 30, 24, "Settings & Device Controls", 32, 0x00, true);
 
         if (!status_banner_.empty()) {
-            canvas_.drawText(40, TOP_H + 15, status_banner_, 2, 0x00);
+            font_.drawText(canvas_, 40, TOP_H + 15, status_banner_, 22, 0x00, true);
         }
 
-        int y = TOP_H + 40;
-        canvas_.drawText(40, y, "rm2manga for Kindle Oasis", 3, 0x00);
-        y += 50;
-        canvas_.drawText(40, y, "Screen: 1264x1680 (300 PPI, 8-bit Grayscale)", 2, 0x40);
-        y += 40;
-        canvas_.drawText(40, y, "EPDC Controller: Zelda MXCFB Native Driver", 2, 0x40);
-        y += 40;
-        canvas_.drawText(40, y, "Storage Directory: /mnt/us/manga", 2, 0x40);
+        int y = TOP_H + 35;
+        font_.drawText(canvas_, 40, y, "Kindle Oasis (Zelda Platform, 1264x1680 @ 300 PPI)", 24, 0x40, false);
 
-        y = 350;
+        // Frontlight Control
+        y += 60;
+        font_.drawText(canvas_, 40, y + 10, "Frontlight Intensity:", 26, 0x00, true);
+        canvas_.drawButton(300, y, 70, 55, "-", false, 2);
+        std::string flVal = std::to_string(state_.settings().frontlight) + " / 24";
+        font_.drawText(canvas_, 395, y + 12, flVal, 26, 0x00, true);
+        canvas_.drawButton(490, y, 70, 55, "+", false, 2);
+
+        // Reading Mode Control
+        y += 80;
+        font_.drawText(canvas_, 40, y + 10, "Reading Mode:", 26, 0x00, true);
+        std::string modeLabel = (state_.settings().reading_direction == "RTL") ? "Manga (RTL <-)" : "Comic (LTR ->)";
+        canvas_.drawButton(300, y, 260, 55, modeLabel, true, 2);
+
+        y = 440;
         // Big Exit Button
         canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Exit rm2manga to Kindle Home", true, 3);
 
-        y = 470;
+        y = 550;
         // Clear Cache Button
         canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Clear Reader Image Cache", false, 3);
 
-        y = 590;
+        y = 660;
         // Refresh Library Button
-        canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Rescan Library on Storage", false, 3);
+        canvas_.drawButton(100, y, SCREEN_W - 200, 80, "Rescan Manga Storage", false, 3);
     }
 
     void renderReader() {
@@ -842,11 +989,21 @@ private:
 
             std::string titleStr = selected_manga_.title;
             if (titleStr.length() > 24) titleStr = titleStr.substr(0, 22) + "...";
-            canvas_.drawText(200, 26, titleStr, 2, 0x00);
+            font_.drawText(canvas_, 200, 26, titleStr, 28, 0x00, true);
 
             std::string pageInfo = std::to_string(reader_current_page_ + 1) + " / " + std::to_string(reader_total_pages_);
-            int piW = canvas_.measureTextWidth(pageInfo, 2);
-            canvas_.drawText(SCREEN_W - piW - 40, 26, pageInfo, 2, 0x00);
+            font_.drawText(canvas_, SCREEN_W - 200, 26, pageInfo, 26, 0x00, false);
+
+            // Middle Light Control Overlay
+            int midY = 820;
+            canvas_.fillRect(SCREEN_W / 2 - 250, midY, 500, 70, 0xF5);
+            canvas_.drawRect(SCREEN_W / 2 - 250, midY, 500, 70, 0x00, 2);
+            font_.drawText(canvas_, SCREEN_W / 2 - 230, midY + 20, "Light", 24, 0x00, true);
+            canvas_.drawButton(SCREEN_W / 2 - 130, midY + 10, 60, 50, "-", false, 2);
+            std::string curFl = std::to_string(state_.settings().frontlight);
+            font_.drawText(canvas_, SCREEN_W / 2 - 40, midY + 20, curFl, 24, 0x00, true);
+            canvas_.drawButton(SCREEN_W / 2 + 10, midY + 10, 60, 50, "+", false, 2);
+            canvas_.drawButton(SCREEN_W / 2 + 90, midY + 10, 140, 50, state_.settings().reading_direction, false, 2);
 
             // Bottom Bar Overlay
             int bot_y = SCREEN_H - 90;
@@ -861,7 +1018,7 @@ private:
     void renderReaderPage() {
         if (reader_page_files_.empty() || reader_current_page_ < 0 ||
             reader_current_page_ >= static_cast<int>(reader_page_files_.size())) {
-            canvas_.drawText(SCREEN_W / 2 - 200, SCREEN_H / 2 - 30, "No page image available", 2, 0x00);
+            font_.drawText(canvas_, SCREEN_W / 2 - 140, SCREEN_H / 2 - 20, "No page image available", 28, 0x00, false);
             return;
         }
 
@@ -871,14 +1028,13 @@ private:
         }
 
         int imgW = 0, imgH = 0, channels = 0;
-        // Decode directly as 1-channel 8-bit grayscale
         unsigned char* data = stbi_load(rawPath.c_str(), &imgW, &imgH, &channels, 1);
         if (!data) {
-            canvas_.drawText(SCREEN_W / 2 - 220, SCREEN_H / 2 - 30, "Failed to decode page: " + fs::path(rawPath).filename().string(), 2, 0x00);
+            font_.drawText(canvas_, SCREEN_W / 2 - 180, SCREEN_H / 2 - 20, "Failed to decode page", 28, 0x00, false);
             return;
         }
 
-        // Fullscreen edge-to-edge aspect ratio fit (1264 x 1680)
+        // Fullscreen edge-to-edge aspect ratio fit
         double scaleW = static_cast<double>(SCREEN_W) / imgW;
         double scaleH = static_cast<double>(SCREEN_H) / imgH;
         double scale = std::min(scaleW, scaleH);
@@ -916,7 +1072,6 @@ private:
             }
         }
 
-        // Bottom row: Close, Space, Backspace, Search
         int bot_y = kb_y + 15 + 3 * row_h;
         canvas_.drawButton(20, bot_y, 160, row_h - 10, "Close", false, 2);
         canvas_.drawButton(190, bot_y, SCREEN_W - 480, row_h - 10, "SPACE", false, 2);
@@ -937,9 +1092,9 @@ private:
             bool is_active = (selected_tab_ == i);
             if (is_active) {
                 canvas_.fillRect(x + 5, nav_y + 5, tab_w - 10, NAV_H - 10, 0x00);
-                canvas_.drawText(x + (tab_w - canvas_.measureTextWidth(tabs[i], 2)) / 2, nav_y + 35, tabs[i], 2, 0xFF);
+                font_.drawText(canvas_, x + (tab_w - font_.measureText(tabs[i], 24, true)) / 2, nav_y + 35, tabs[i], 24, 0xFF, true);
             } else {
-                canvas_.drawText(x + (tab_w - canvas_.measureTextWidth(tabs[i], 2)) / 2, nav_y + 35, tabs[i], 2, 0x00);
+                font_.drawText(canvas_, x + (tab_w - font_.measureText(tabs[i], 24, false)) / 2, nav_y + 35, tabs[i], 24, 0x00, false);
             }
         }
     }
