@@ -254,10 +254,13 @@ inline std::string getUserAgentForUrl(const std::string& url) {
 }
 
 inline std::string getRefererForUrl(const std::string& url) {
-    if (url.find("mfcdn.net") != std::string::npos || url.find("fanfox.net") != std::string::npos) {
+    if (url.find("mfcdn.net") != std::string::npos ||
+        url.find("fanfox.net") != std::string::npos ||
+        url.find("mangafox") != std::string::npos) {
         return "https://fanfox.net/";
     }
-    if (url.find("zjcdn.mangahere.org") != std::string::npos || url.find("mangahere") != std::string::npos) {
+    if (url.find("mangahere") != std::string::npos ||
+        url.find("zjcdn") != std::string::npos) {
         return "https://www.mangahere.cc/";
     }
     if (url.find("mangakatana.com") != std::string::npos) {

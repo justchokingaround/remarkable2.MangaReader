@@ -264,6 +264,7 @@ private:
         for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
             std::smatch match = *i;
             std::string link = match[1].str();
+            if (!slug.empty() && link.find(slug) == std::string::npos) continue;
             if (seenUrls.find(link) != seenUrls.end()) continue;
             seenUrls.insert(link);
 
@@ -368,7 +369,9 @@ private:
         std::string unpacked = unpackDeanEdwards(script);
 
         std::vector<std::string> pages;
-        std::regex urlRegex(R"raw((?:https?:)?//[^\s'",;]+\.(?:jpg|jpeg|png|webp))raw");
+
+        // 1. Try extracting direct image URLs (matching images with optional tokens/queries)
+        std::regex urlRegex(R"raw((?:https?:)?//[^\s'",;]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s'",;]*)?)raw");
         auto begin = std::sregex_iterator(unpacked.begin(), unpacked.end(), urlRegex);
         auto end = std::sregex_iterator();
         for (auto it = begin; it != end; ++it) {
@@ -376,6 +379,104 @@ private:
             if (u.rfind("//", 0) == 0) u = "https:" + u;
             if (pages.empty() || pages.back() != u) {
                 pages.push_back(u);
+            }
+        }
+
+        // 2. If no direct page URLs in the script, check for DM5 chapterfun.ashx mechanism
+        if (pages.empty()) {
+            std::smatch cidMatch, countMatch, guidMatch;
+            std::regex cidRegex(R"raw(var\s+chapterid\s*=\s*(\d+);)raw");
+            std::regex countRegex(R"raw(var\s+imagecount\s*=\s*(\d+);)raw");
+            std::regex guidRegex(R"raw(guidkey\s*=\s*([^;]+);)raw");
+
+            std::string cidStr, guidStr;
+            int totalPages = 0;
+
+            if (std::regex_search(html, cidMatch, cidRegex)) {
+                cidStr = cidMatch[1].str();
+            }
+            if (std::regex_search(html, countMatch, countRegex)) {
+                totalPages = std::atoi(countMatch[1].str().c_str());
+            }
+            if (std::regex_search(unpacked, guidMatch, guidRegex)) {
+                std::string rawGuid = guidMatch[1].str();
+                for (char c : rawGuid) {
+                    if (std::isalnum(static_cast<unsigned char>(c))) {
+                        guidStr += c;
+                    }
+                }
+            }
+
+            if (!cidStr.empty() && totalPages > 0) {
+                std::string baseDir = fullUrl;
+                size_t lastSlash = baseDir.rfind('/');
+                if (lastSlash != std::string::npos) {
+                    baseDir = baseDir.substr(0, lastSlash + 1);
+                } else {
+                    baseDir += "/";
+                }
+
+                // Batch fetch chapterfun.ashx (each call typically yields 2 pages)
+                for (int p = 1; p <= totalPages; p += 2) {
+                    std::string funUrl = baseDir + "chapterfun.ashx?cid=" + cidStr +
+                                         "&page=" + std::to_string(p) +
+                                         "&key=" + guidStr;
+                    std::string funResp;
+                    if (!util::httpsGetString(funUrl, funResp, 15)) {
+                        break;
+                    }
+
+                    std::string funUnpacked = unpackDeanEdwards(funResp);
+                    if (funUnpacked.empty()) funUnpacked = funResp;
+
+                    std::smatch pixMatch, pvalMatch;
+                    std::regex pixRegex(R"raw(var\s+pix\s*=\s*["']([^"']+)["'])raw");
+                    std::regex pvalRegex(R"raw(var\s+pvalue\s*=\s*\[([^\]]+)\])raw");
+
+                    std::string pix = "";
+                    if (std::regex_search(funUnpacked, pixMatch, pixRegex)) {
+                        pix = pixMatch[1].str();
+                        if (pix.rfind("//", 0) == 0) pix = "https:" + pix;
+                    }
+
+                    if (std::regex_search(funUnpacked, pvalMatch, pvalRegex)) {
+                        std::string rawList = pvalMatch[1].str();
+                        std::stringstream ss(rawList);
+                        std::string item;
+                        while (std::getline(ss, item, ',')) {
+                            std::string cleaned;
+                            for (char c : item) {
+                                if (c != '"' && c != '\'' && c != ' ' && c != '\r' && c != '\n') {
+                                    cleaned += c;
+                                }
+                            }
+                            if (!cleaned.empty()) {
+                                std::string fullImg = cleaned;
+                                if (fullImg.rfind("http", 0) != 0 && fullImg.rfind("//", 0) != 0) {
+                                    fullImg = pix + cleaned;
+                                } else if (fullImg.rfind("//", 0) == 0) {
+                                    fullImg = "https:" + fullImg;
+                                }
+                                if (pages.empty() || pages.back() != fullImg) {
+                                    pages.push_back(fullImg);
+                                }
+                            }
+                        }
+                    } else {
+                        auto bit = std::sregex_iterator(funUnpacked.begin(), funUnpacked.end(), urlRegex);
+                        for (; bit != end; ++bit) {
+                            std::string u = bit->str();
+                            if (u.rfind("//", 0) == 0) u = "https:" + u;
+                            if (pages.empty() || pages.back() != u) {
+                                pages.push_back(u);
+                            }
+                        }
+                    }
+
+                    if (static_cast<int>(pages.size()) >= totalPages) {
+                        break;
+                    }
+                }
             }
         }
 
