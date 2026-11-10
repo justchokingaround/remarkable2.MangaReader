@@ -246,6 +246,31 @@ inline bool hasBinary(const char* absPath) {
     return ::access(absPath, X_OK) == 0;
 }
 
+// Locates a curl binary. reMarkable OS only ships BusyBox wget, whose TLS stack is
+// TLS 1.2-only and fails on TLS 1.3-only hosts such as api.mangadex.org, so the app
+// bundle ships a static curl at backend/curl (see scripts/build.sh).
+// Note: curl is always called with -g (globoff) because MangaDex URLs contain
+// brackets such as order[relevance]=desc, which curl would treat as a glob range.
+inline const std::string& curlBinary() {
+    static const std::string path = []() {
+        if (const char* e = std::getenv("RM2MANGA_CURL")) {
+            if (::access(e, X_OK) == 0) return std::string(e);
+        }
+        std::error_code ec;
+        std::vector<std::string> candidates = {
+            fs::absolute("backend/curl", ec).string(),
+            "/home/root/.local/bin/curl",
+            "/opt/bin/curl",
+            "/usr/bin/curl",
+        };
+        for (const auto& c : candidates) {
+            if (!c.empty() && ::access(c.c_str(), X_OK) == 0) return c;
+        }
+        return std::string();
+    }();
+    return path;
+}
+
 inline std::string getUserAgentForUrl(const std::string& url) {
     if (url.find("mangadex.org") != std::string::npos) {
         return "rm2manga/1.0 (https://github.com/tungle/rm2manga)";
@@ -277,6 +302,23 @@ inline std::string getRefererForUrl(const std::string& url) {
 inline bool httpsGetString(const std::string& url, std::string& bodyOut, int timeoutSec = 25) {
     std::string ua = getUserAgentForUrl(url);
     std::string ref = getRefererForUrl(url);
+    const std::string& curl = curlBinary();
+    if (!curl.empty()) {
+        std::vector<std::string> args = {
+            curl, "-fsSLg", "--compressed", "--max-time", std::to_string(timeoutSec),
+            "-A", ua
+        };
+        if (!ref.empty()) {
+            args.push_back("-e");
+            args.push_back(ref);
+        }
+        args.push_back(url);
+        auto r = runProcess(args, timeoutSec + 5);
+        if (r.exitCode == 0 && !r.stdoutData.empty()) {
+            bodyOut = std::move(r.stdoutData);
+            return true;
+        }
+    }
     if (hasBinary("/usr/bin/wget")) {
         std::vector<std::string> args = {
             "/usr/bin/wget", "-q", "-T", std::to_string(timeoutSec),
@@ -287,22 +329,6 @@ inline bool httpsGetString(const std::string& url, std::string& bodyOut, int tim
         }
         args.push_back("-O");
         args.push_back("-");
-        args.push_back(url);
-        auto r = runProcess(args, timeoutSec + 5);
-        if (r.exitCode == 0 && !r.stdoutData.empty()) {
-            bodyOut = std::move(r.stdoutData);
-            return true;
-        }
-    }
-    if (hasBinary("/usr/bin/curl")) {
-        std::vector<std::string> args = {
-            "/usr/bin/curl", "-fsSL", "--max-time", std::to_string(timeoutSec),
-            "-A", ua
-        };
-        if (!ref.empty()) {
-            args.push_back("-e");
-            args.push_back(ref);
-        }
         args.push_back(url);
         auto r = runProcess(args, timeoutSec + 5);
         if (r.exitCode == 0 && !r.stdoutData.empty()) {
@@ -322,7 +348,25 @@ inline bool httpsDownloadFile(const std::string& url, const fs::path& dest, int 
     std::string ua = getUserAgentForUrl(url);
     std::string ref = getRefererForUrl(url);
     bool ok = false;
-    if (hasBinary("/usr/bin/wget")) {
+    const std::string& curl = curlBinary();
+    if (!curl.empty()) {
+        std::vector<std::string> args = {
+            curl, "-fsSLg", "--max-time", std::to_string(timeoutSec),
+            "-A", ua
+        };
+        if (!ref.empty()) {
+            args.push_back("-e");
+            args.push_back(ref);
+        }
+        args.push_back("-o");
+        args.push_back(tmp.string());
+        args.push_back(url);
+        auto r = runProcess(args, timeoutSec + 5);
+        if (r.exitCode == 0 && fs::exists(tmp, ec) && fs::file_size(tmp, ec) > 0) {
+            ok = true;
+        }
+    }
+    if (!ok && hasBinary("/usr/bin/wget")) {
         std::vector<std::string> args = {
             "/usr/bin/wget", "-q", "-T", std::to_string(timeoutSec),
             "-U", ua
@@ -331,23 +375,6 @@ inline bool httpsDownloadFile(const std::string& url, const fs::path& dest, int 
             args.push_back("--header=Referer: " + ref);
         }
         args.push_back("-O");
-        args.push_back(tmp.string());
-        args.push_back(url);
-        auto r = runProcess(args, timeoutSec + 5);
-        if (r.exitCode == 0 && fs::exists(tmp, ec) && fs::file_size(tmp, ec) > 0) {
-            ok = true;
-        }
-    }
-    if (!ok && hasBinary("/usr/bin/curl")) {
-        std::vector<std::string> args = {
-            "/usr/bin/curl", "-fsSL", "--max-time", std::to_string(timeoutSec),
-            "-A", ua
-        };
-        if (!ref.empty()) {
-            args.push_back("-e");
-            args.push_back(ref);
-        }
-        args.push_back("-o");
         args.push_back(tmp.string());
         args.push_back(url);
         auto r = runProcess(args, timeoutSec + 5);

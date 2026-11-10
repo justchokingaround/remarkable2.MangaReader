@@ -62,6 +62,16 @@ public:
                 return false;
             }
             if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+#ifdef __linux__
+                // Each SEQPACKET message must fit in the send buffer (default wmem_max is only
+                // ~176KB on the rM2), otherwise send() fails with EMSGSIZE after the header was
+                // already sent and the stream desyncs. Large chapter lists (One Piece: 2000+
+                // chapters) easily exceed that. Root may raise it past wmem_max with SNDBUFFORCE.
+                int sndbuf = 8 * 1024 * 1024;
+                if (::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &sndbuf, sizeof(sndbuf)) != 0) {
+                    ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+                }
+#endif
                 fd_ = fd;
                 closed_ = false;
                 return true;
@@ -98,6 +108,19 @@ public:
         std::lock_guard<std::mutex> lock(sendMutex_);
         if (closed_.load() || fd_ < 0) return false;
 
+#ifdef __linux__
+        {
+            // Refuse to send a header whose payload cannot fit (would desync the stream)
+            int sndbuf = 0;
+            socklen_t sl = sizeof(sndbuf);
+            if (::getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &sndbuf, &sl) == 0 && sndbuf > 0 &&
+                payload.size() + 1024 > static_cast<size_t>(sndbuf)) {
+                std::cerr << "[rm2manga] Dropping oversized message type " << msgType << " ("
+                          << payload.size() << " bytes > sndbuf " << sndbuf << ")\n";
+                return false;
+            }
+        }
+#endif
         PacketHeader hdr{msgType, static_cast<int32_t>(payload.size())};
         ssize_t n = ::send(fd_, &hdr, sizeof(hdr), MSG_NOSIGNAL_COMPAT());
         if (n != static_cast<ssize_t>(sizeof(hdr))) {

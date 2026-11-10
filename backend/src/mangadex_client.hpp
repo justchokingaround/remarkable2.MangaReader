@@ -6,7 +6,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <algorithm>
+#include <cctype>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -37,8 +40,34 @@ inline std::string pickLocalized(const Json::Value& dict, const Json::Value& alt
 
 class Client {
     std::string apiBase_ = "https://api.mangadex.org";
+    mutable std::mutex langMu_;
+    std::vector<std::string> languages_ = {"en"};
+
+    std::string langParams(const std::string& key) const {
+        std::lock_guard<std::mutex> lock(langMu_);
+        std::string out;
+        for (const auto& l : languages_) out += "&" + key + "[]=" + util::urlEncode(l);
+        return out;
+    }
 
 public:
+    // Language codes from settings.json "languages" (e.g. ["en","ru"]). "multi" is ignored.
+    void setLanguages(const std::vector<std::string>& langs) {
+        std::vector<std::string> clean;
+        for (const auto& l : langs) {
+            if (l.empty() || l == "multi") continue;
+            if (std::find(clean.begin(), clean.end(), l) == clean.end()) clean.push_back(l);
+        }
+        if (clean.empty()) clean.push_back("en");
+        std::lock_guard<std::mutex> lock(langMu_);
+        languages_ = std::move(clean);
+    }
+
+    size_t languageCount() const {
+        std::lock_guard<std::mutex> lock(langMu_);
+        return languages_.size();
+    }
+
     Client() {
         if (const char* envBase = std::getenv("RM2MANGA_MANGADEX_API")) {
             apiBase_ = envBase;
@@ -90,8 +119,8 @@ public:
         std::string url = apiBase_ + "/manga?limit=24"
                           "&includes[]=cover_art&includes[]=author"
                           "&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica"
-                          "&hasAvailableChapters=true"
-                          "&availableTranslatedLanguage[]=en";
+                          "&hasAvailableChapters=true" +
+                          langParams("availableTranslatedLanguage");
         if (mode == "latest") {
             url += "&order[latestUploadedChapter]=desc";
         } else if (mode == "popular" || query.empty()) {
@@ -138,13 +167,14 @@ public:
 
     Json::Value getChapters(const std::string& mangaId, std::string* errOut = nullptr) {
         Json::Value chapters = Json::Value::array();
+        const bool multiLang = languageCount() > 1;
         int offset = 0;
         const int limit = 500;
 
         for (int page = 0; page < 6; ++page) {  // up to 3,000 chapters
             std::string url = apiBase_ + "/manga/" + util::urlEncode(mangaId) +
-                              "/feed?translatedLanguage[]=en"
-                              "&limit=" + std::to_string(limit) +
+                              "/feed?limit=" + std::to_string(limit) +
+                              langParams("translatedLanguage") +
                               "&offset=" + std::to_string(offset) +
                               "&order[chapter]=asc&order[volume]=asc"
                               "&includes[]=scanlation_group"
@@ -193,6 +223,13 @@ public:
                             if (!groupName.empty()) break;
                         }
                     }
+                }
+                std::string lang = attrs["translatedLanguage"].str();
+                item["language"] = lang;
+                if (multiLang && !lang.empty()) {
+                    std::string up;
+                    for (char c : lang) up += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    groupName = "[" + up + "]" + (groupName.empty() ? "" : " " + groupName);
                 }
                 item["scanlator"] = groupName;
                 item["read"] = false;

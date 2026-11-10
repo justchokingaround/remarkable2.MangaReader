@@ -1,0 +1,132 @@
+diff --git a/runtime/host/net.go b/runtime/host/net.go
+index defb5f7..cc6d2e7 100644
+--- a/runtime/host/net.go
++++ b/runtime/host/net.go
+@@ -249,6 +249,7 @@ func LinkNet(builder wazero.HostModuleBuilder, n *Net) wazero.HostModuleBuilder
+ 			if err != nil {
+ 				return int32(netInvalidURL)
+ 			}
++			SanitizeURL(u)
+ 			req.URL = u
+ 			return int32(netSuccess)
+ 		}).
+diff --git a/runtime/host/urlsanitize.go b/runtime/host/urlsanitize.go
+new file mode 100644
+index 0000000..8b5b2f0
+--- /dev/null
++++ b/runtime/host/urlsanitize.go
+@@ -0,0 +1,70 @@
++package host
++
++import (
++	"net/url"
++	"strings"
++)
++
++// SanitizeURL percent-encodes bytes that are not valid in a URL query string
++// (spaces, control characters, non-ASCII such as Cyrillic search terms, and a few
++// reserved-but-invalid characters). Go's url.Parse keeps RawQuery verbatim, so a
++// source doing `"...?q=" + query` without encoding would otherwise send an invalid
++// HTTP request line (servers answer 400 or hang). Aidoku on iOS gets this for free
++// from Foundation's URL(string:), which sources rely on. Existing %XX escapes and
++// query delimiters (&, =, +, ...) are left untouched.
++func SanitizeURL(u *url.URL) {
++	if u == nil {
++		return
++	}
++	u.RawQuery = escapeInvalidURLBytes(u.RawQuery)
++	u.Fragment = strings.TrimSpace(u.Fragment)
++}
++
++// SanitizeRawURL parses rawURL and returns its sanitized string form (or rawURL
++// unchanged if it does not parse).
++func SanitizeRawURL(rawURL string) string {
++	u, err := url.Parse(strings.TrimSpace(rawURL))
++	if err != nil {
++		return rawURL
++	}
++	SanitizeURL(u)
++	return u.String()
++}
++
++func escapeInvalidURLBytes(s string) string {
++	const hex = "0123456789ABCDEF"
++	needs := false
++	for i := 0; i < len(s); i++ {
++		if invalidURLByte(s[i]) {
++			needs = true
++			break
++		}
++	}
++	if !needs {
++		return s
++	}
++	var b strings.Builder
++	b.Grow(len(s) + 16)
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		if invalidURLByte(c) {
++			b.WriteByte('%')
++			b.WriteByte(hex[c>>4])
++			b.WriteByte(hex[c&15])
++		} else {
++			b.WriteByte(c)
++		}
++	}
++	return b.String()
++}
++
++func invalidURLByte(c byte) bool {
++	if c <= 0x20 || c >= 0x7f {
++		return true
++	}
++	switch c {
++	case '"', '<', '>', '\\', '^', '`', '{', '|', '}':
++		return true
++	}
++	return false
++}
+diff --git a/runtime/host/urlsanitize_test.go b/runtime/host/urlsanitize_test.go
+new file mode 100644
+index 0000000..b3ed3af
+--- /dev/null
++++ b/runtime/host/urlsanitize_test.go
+@@ -0,0 +1,25 @@
++package host
++
++import (
++	"net/url"
++	"testing"
++)
++
++func TestSanitizeURL(t *testing.T) {
++	cases := map[string]string{
++		"https://api.example.org/search?q=chainsaw man&page=1": "https://api.example.org/search?q=chainsaw%20man&page=1",
++		"https://x.org/s?q=Человек":                             "https://x.org/s?q=%D0%A7%D0%B5%D0%BB%D0%BE%D0%B2%D0%B5%D0%BA",
++		"https://x.org/s?q=a%20b&f[]=1":                         "https://x.org/s?q=a%20b&f[]=1",
++		"https://x.org/path with space/i.jpg":                   "https://x.org/path%20with%20space/i.jpg",
++	}
++	for in, want := range cases {
++		u, err := url.Parse(in)
++		if err != nil {
++			t.Fatalf("parse %q: %v", in, err)
++		}
++		SanitizeURL(u)
++		if got := u.String(); got != want {
++			t.Errorf("SanitizeURL(%q) = %q, want %q", in, got, want)
++		}
++	}
++}
+diff --git a/source/pagefetch.go b/source/pagefetch.go
+index 4cac8b3..4877d54 100644
+--- a/source/pagefetch.go
++++ b/source/pagefetch.go
+@@ -181,7 +181,7 @@ func (s *Source) buildImageRequest(ctx context.Context, rawURL string, pc models
+ 	}
+ 	if req == nil {
+ 		var err error
+-		if req, err = http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil); err != nil {
++		if req, err = http.NewRequestWithContext(ctx, http.MethodGet, host.SanitizeRawURL(rawURL), nil); err != nil {
+ 			return nil, fmt.Errorf("source: building request for %s: %w", rawURL, err)
+ 		}
+ 	}

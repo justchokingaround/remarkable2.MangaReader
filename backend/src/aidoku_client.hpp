@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <sys/socket.h>
@@ -90,26 +92,87 @@ public:
     }
 
     static std::string formatSourceConfigPretty(const Json::Value& sourceLists,
-                                                const Json::Value& languages) {
-        std::string out = "{\n  \"source_lists\": [";
-        const auto& sl = sourceLists.asArray();
-        if (!sl.empty()) {
-            out += "\n";
-            for (size_t i = 0; i < sl.size(); ++i) {
-                out += "    " + Json::stringify(Json::Value(sl[i].str()));
-                if (i + 1 < sl.size()) out += ",";
-                out += "\n";
+                                                const Json::Value& languages,
+                                                const Json::Value& v2Lists = Json::Value()) {
+        auto fmtList = [](const Json::Value& arr) {
+            std::string o = "[";
+            const auto& sl = arr.asArray();
+            if (!sl.empty()) {
+                o += "\n";
+                for (size_t i = 0; i < sl.size(); ++i) {
+                    o += "    " + Json::stringify(Json::Value(sl[i].str()));
+                    if (i + 1 < sl.size()) o += ",";
+                    o += "\n";
+                }
+                o += "  ";
             }
-            out += "  ";
-        }
-        out += "],\n  \"languages\": [";
+            return o + "]";
+        };
+        std::string out = "{\n  \"source_lists\": " + fmtList(sourceLists);
+        out += ",\n  \"languages\": [";
         const auto& langs = languages.asArray();
         for (size_t i = 0; i < langs.size(); ++i) {
             if (i > 0) out += ", ";
             out += Json::stringify(Json::Value(langs[i].str()));
         }
-        out += "]\n}";
+        out += "]";
+        if (v2Lists.isArray() && !v2Lists.empty()) {
+            out += ",\n  \"" + std::string(kV2Key) + "\": " + fmtList(v2Lists);
+        }
+        out += "\n}";
         return out;
+    }
+
+    // rakuyomi only parses legacy-format source lists (a JSON array). New-format Aidoku lists
+    // ({"name":..,"sources":[..]}) are stored under this extra key, which rakuyomi ignores, and
+    // are served by the aidoku-run engine instead. The UI sees one merged "source_lists" array.
+    static constexpr const char* kV2Key = "rm2manga_v2_source_lists";
+
+    static std::vector<std::string> readStringArray(const Json::Value& arr) {
+        std::vector<std::string> out;
+        if (!arr.isArray()) return out;
+        for (const auto& u : arr.asArray()) {
+            std::string s = util::trim(u.str());
+            if (!s.empty()) out.push_back(s);
+        }
+        return out;
+    }
+
+    Json::Value readSettingsRaw() const {
+        std::string raw;
+        if (util::readFileToString(fs::path(homeDir_) / "settings.json", raw) && !raw.empty()) {
+            bool ok = false;
+            Json::Value tmp = Json::parse(raw, &ok);
+            if (ok && tmp.isObject()) return tmp;
+        }
+        return Json::Value::object();
+    }
+
+    std::vector<std::string> legacySourceLists() const { return readStringArray(readSettingsRaw()["source_lists"]); }
+    std::vector<std::string> v2SourceLists() const { return readStringArray(readSettingsRaw()[kV2Key]); }
+    std::vector<std::string> languages() const {
+        auto l = readStringArray(readSettingsRaw()["languages"]);
+        if (l.empty()) l.push_back("en");
+        return l;
+    }
+
+    // Detects whether an index URL is a new-format (Aidoku 0.7+) source list.
+    static bool isV2Index(const std::string& url) {
+        static std::mutex mu;
+        static std::map<std::string, bool> cache;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            auto it = cache.find(url);
+            if (it != cache.end()) return it->second;
+        }
+        if (url.find("legacy-sources") != std::string::npos) return false;
+        std::string body;
+        if (!util::httpsGetString(url, body, 25)) return false;  // unknown -> legacy (old behaviour)
+        size_t p = body.find_first_not_of(" \t\r\n");
+        bool v2 = (p != std::string::npos && body[p] == '{' && body.find("\"sources\"") != std::string::npos);
+        std::lock_guard<std::mutex> lock(mu);
+        cache[url] = v2;
+        return v2;
     }
 
     Json::Value getSourceConfig() const {
@@ -125,11 +188,8 @@ public:
         }
 
         Json::Value sl = Json::Value::array();
-        if (parsed["source_lists"].isArray()) {
-            for (const auto& u : parsed["source_lists"].asArray()) {
-                std::string s = util::trim(u.str());
-                if (!s.empty()) sl.push(s);
-            }
+        for (const auto& key : {"source_lists", kV2Key}) {
+            for (const auto& u : readStringArray(parsed[key])) sl.push(u);
         }
 
         Json::Value langs = Json::Value::array();
@@ -216,13 +276,24 @@ public:
             newLangs.push("en");
         }
 
-        existing["source_lists"] = std::move(newSourceLists);
-        existing["languages"] = std::move(newLangs);
+        Json::Value legacyLists = Json::Value::array();
+        Json::Value v2Lists = Json::Value::array();
+        for (const auto& u : newSourceLists.asArray()) {
+            if (isV2Index(u.str())) v2Lists.push(u.str());
+            else legacyLists.push(u.str());
+        }
 
-        // If only source_lists and languages are present, write pretty JSON for easy user editing
+        existing["source_lists"] = std::move(legacyLists);
+        existing["languages"] = std::move(newLangs);
+        if (v2Lists.empty()) existing.erase(kV2Key);
+        else existing[kV2Key] = v2Lists;
+
+        // If only our known keys are present, write pretty JSON for easy user editing
         std::string serialized;
-        if (existing.asObject().size() <= 2) {
-            serialized = formatSourceConfigPretty(existing["source_lists"], existing["languages"]) + "\n";
+        size_t known = 2 + (existing.has(kV2Key) ? 1 : 0);
+        if (existing.asObject().size() <= known) {
+            serialized = formatSourceConfigPretty(existing["source_lists"], existing["languages"],
+                                                  existing[kV2Key]) + "\n";
         } else {
             serialized = Json::stringify(existing) + "\n";
         }

@@ -164,6 +164,8 @@ public:
 
     fs::path root() const { return cacheRoot_; }
 
+    WebpConverter& webp() { return webp_; }
+
     void clearAll() {
         std::lock_guard<std::mutex> lock(mu_);
         std::error_code ec;

@@ -144,7 +144,11 @@ public:
     // Syncs Aidoku /library list with local state while preserving cover_path and reading progress
     void syncAidokuLibraryList(const Json::Value& aidokuLibArray) {
         std::lock_guard<std::mutex> lock(mu_);
+        // Only rakuyomi-managed mangas mirror the rakuyomi library; built-in MangaDex and
+        // aidoku-run ("v2.") sources keep their library flag locally.
         for (auto& kv : root_["mangas"].asObjectMut()) {
+            std::string sid = kv.second["source_id"].str();
+            if (sid == "mangadex" || sid.rfind("v2.", 0) == 0) continue;
             kv.second["in_library"] = false;
         }
         if (aidokuLibArray.isArray()) {

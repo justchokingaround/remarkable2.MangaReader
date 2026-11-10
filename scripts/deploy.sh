@@ -47,7 +47,11 @@ TAR_ARGS=()
 if [[ "$(uname -s)" == "Darwin" ]]; then
     TAR_ARGS+=(--no-mac-metadata)
 fi
-tar ${TAR_ARGS[@]+"${TAR_ARGS[@]}"} -C "${DIST_DIR}" -cf - manifest.json icon.png resources.rcc backend/entry \
+BUNDLE_FILES=(manifest.json icon.png resources.rcc backend/entry)
+for extra in backend/curl backend/aidoku-run; do
+    [[ -x "${DIST_DIR}/${extra}" ]] && BUNDLE_FILES+=("${extra}")
+done
+tar ${TAR_ARGS[@]+"${TAR_ARGS[@]}"} -C "${DIST_DIR}" -cf - "${BUNDLE_FILES[@]}" \
     | ssh "${SSH_ARGS[@]}" "${RM_HOST}" "${REMOTE_CMD}"
 
 if [[ "${RESTART_XOCHITL}" -eq 1 ]]; then

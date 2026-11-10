@@ -1,5 +1,6 @@
 #include "aidoku_client.hpp"
 #include "aidoku_db.hpp"
+#include "aidokurun_client.hpp"
 #include "appload_ipc.hpp"
 #include "cbz_extractor.hpp"
 #include "json.hpp"
@@ -13,6 +14,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <deque>
+#include <future>
 #include <filesystem>
 #include <iostream>
 #include <list>
@@ -83,6 +85,7 @@ class Rm2MangaApp {
     aidoku::Client aidoku_;
     aidoku::CoverDb coverDb_;
     mangadex::Client mangadex_;
+    aidokurun::Client arun_;
     extractor::PageCache pageCache_;
 
     std::atomic<bool> shuttingDown_{false};
@@ -130,9 +133,12 @@ public:
         : state_(workDir / "data"),
           aidoku_(workDir / "data" / "aidoku"),
           coverDb_(fs::path(aidoku_.homeDir()) / "database.db"),
+          arun_(workDir / "data" / "aidoku-run", workDir / "backend" / "aidoku-run"),
           pageCache_(std::getenv("RM2MANGA_PAGE_CACHE_DIR")
                          ? std::getenv("RM2MANGA_PAGE_CACHE_DIR")
-                         : "/tmp/rm2manga_pages") {}
+                         : "/tmp/rm2manga_pages") {
+        applyLanguages();
+    }
 
     ~Rm2MangaApp() {
         shutdown();
@@ -228,6 +234,59 @@ private:
         std::lock_guard<std::mutex> lock(discoverMu_);
         discoverCache_ = Json::Value::array();
         discoverCacheTs_ = 0;
+        arun_.clearDiscoverCache();
+    }
+
+    // Sources whose library/read state lives in the rakuyomi server
+    static bool isRakuyomiSource(const std::string& sid) {
+        return sid != "mangadex" && !aidokurun::isV2Source(sid);
+    }
+
+    void applyLanguages() {
+        mangadex_.setLanguages(aidoku_.languages());
+    }
+
+    bool hasAnySourceLists() {
+        return !aidoku_.legacySourceLists().empty() || !aidoku_.v2SourceLists().empty();
+    }
+
+    // Available sources from both engines (rakuyomi legacy lists + aidoku-run v2 lists)
+    Json::Value listAllAvailableSources(bool rakuyomiOnline, std::string* errOut) {
+        Json::Value out = Json::Value::array();
+        std::string err1, err2;
+        auto v2Lists = aidoku_.v2SourceLists();
+        std::future<Json::Value> v2Fut;
+        if (!v2Lists.empty() && arun_.available()) {
+            auto langs = aidoku_.languages();
+            v2Fut = std::async(std::launch::async, [this, v2Lists, langs, &err2]() {
+                return arun_.listAvailable(v2Lists, langs, &err2);
+            });
+        }
+        if (rakuyomiOnline && !aidoku_.legacySourceLists().empty()) {
+            Json::Value a = aidoku_.listAvailableSources(&err1);
+            for (const auto& s : a.asArray()) out.push(s);
+        }
+        if (v2Fut.valid()) {
+            Json::Value b = v2Fut.get();
+            for (const auto& s : b.asArray()) out.push(s);
+        }
+        if (errOut) *errOut = !err1.empty() ? err1 : err2;
+        return out;
+    }
+
+    Json::Value fetchV2Chapters(const std::string& sid, const std::string& mid,
+                                const std::string& fallbackTitle, std::string* err) {
+        Json::Value res = arun_.getManga(sid, mid, aidoku_.languages(), err);
+        if (res["manga"].isObject()) {
+            const Json::Value& m = res["manga"];
+            state_.upsertMangaMeta(sid, m["source_name"].str(sid), mid,
+                                   m["title"].str(fallbackTitle), m["cover_url"].str(),
+                                   m["author"].str(), m["description"].str());
+            if (!m["cover_url"].str().empty()) {
+                enqueueCoverFetch(sid, mid, m["title"].str(fallbackTitle), m["cover_url"].str());
+            }
+        }
+        return res["chapters"].isArray() ? res["chapters"] : Json::Value::array();
     }
 
     void enqueueCoverFetch(const std::string& sourceId,
@@ -271,6 +330,7 @@ private:
 
         bool online = aidoku_.ensureRunning();
         if (aidokuOnlineOut) *aidokuOnlineOut = online;
+        Json::Value v2 = arun_.listInstalled();
         if (online) {
             std::string err;
             Json::Value installed = aidoku_.listInstalledSources(&err);
@@ -284,6 +344,7 @@ private:
                 }
             }
         }
+        for (const auto& s : v2.asArray()) list.push(s);
         return list;
     }
 
@@ -312,6 +373,21 @@ private:
                     state_.mergeAndCacheChapters(sid, sname, mid, mtitle, chs);
                 }
                 enqueueCoverFetch(sid, mid, mtitle, "");
+            }
+        }
+
+        if (refreshRemoteChapters) {
+            Json::Value lib = state_.listLibrary();
+            for (const auto& m : lib.asArray()) {
+                std::string sid = m["source_id"].str();
+                if (!aidokurun::isV2Source(sid)) continue;
+                std::string mid = m["manga_id"].str();
+                std::string mtitle = m["title"].str(mid);
+                std::string chErr;
+                Json::Value chs = fetchV2Chapters(sid, mid, mtitle, &chErr);
+                if (chs.isArray() && !chs.empty()) {
+                    state_.mergeAndCacheChapters(sid, m["source_name"].str(sid), mid, mtitle, chs);
+                }
             }
         }
     }
@@ -356,7 +432,8 @@ private:
         ev["downloads"] = state_.listDownloads();
         uint64_t bytes = util::directorySizeBytes(pageCache_.root()) +
                          util::directorySizeBytes(state_.localChaptersDir()) +
-                         util::directorySizeBytes(fs::path(aidoku_.homeDir()) / "downloads");
+                         util::directorySizeBytes(fs::path(aidoku_.homeDir()) / "downloads") +
+                         util::directorySizeBytes(arun_.downloadsDir());
         ev["cache_bytes"] = static_cast<int64_t>(bytes);
         ipc_.sendJson(EVT_DOWNLOADS_UPDATED, ev);
     }
@@ -585,7 +662,23 @@ private:
             return pageCache_.prepareFolder(chFolder.string(), errOut);
         }
 
-        // 3. Aidoku chapter via local Aidoku server
+        // 3. New-format Aidoku source via aidoku-run
+        if (aidokurun::isV2Source(sourceId)) {
+            if (onProgress) onProgress("Downloading from " + (sourceName.empty() ? sourceId : sourceName) + "...", 15);
+            std::string dlErr;
+            std::string cbzPath = arun_.downloadChapter(sourceId, mangaId, chapterId, cancelFlag, onProgress, &dlErr);
+            if (cbzPath.empty()) {
+                if (errOut) *errOut = dlErr.empty() ? "Failed to download chapter" : dlErr;
+                return {};
+            }
+            state_.recordDownload(sourceId, sourceName, mangaId, mangaTitle,
+                                  chapterId, chapterNum, hasChapterNum, chapterTitle,
+                                  cbzPath, false);
+            if (onProgress) onProgress("Extracting pages...", 90);
+            return pageCache_.extractCbz(ckey, cbzPath, pinned, errOut);
+        }
+
+        // 4. Aidoku chapter via local Aidoku server
         if (onProgress) onProgress("Preparing chapter from " + (sourceName.empty() ? sourceId : sourceName) + "...", 15);
         std::string dlErr;
         std::string cbzPath = aidoku_.downloadChapter(
@@ -709,8 +802,14 @@ private:
             fs::path dest = state_.coversDir() / (util::hashSlug(mkey) + ".jpg");
             std::error_code ec;
 
+            fs::path pgm = dest;
+            pgm.replace_extension(".pgm");
+
             bool ok = false;
             if (fs::exists(dest, ec) && fs::file_size(dest, ec) > 128) {
+                ok = true;
+            } else if (fs::exists(pgm, ec) && fs::file_size(pgm, ec) > 128) {
+                dest = pgm;
                 ok = true;
             } else if (!task.coverUrl.empty()) {
                 ok = util::httpsDownloadFile(task.coverUrl, dest, 20);
@@ -719,6 +818,9 @@ private:
             if (!ok && !task.title.empty()) {
                 ok = mangadex_.fetchCoverByTitle(task.title, dest);
             }
+
+            // Qt on the rM2 has no WebP plugin; convert WebP covers to grayscale PGM
+            if (ok) dest = pageCache_.webp().ensureQtReadable(dest);
 
             if (ok && !shuttingDown_.load()) {
                 std::string uri = "file://" + fs::absolute(dest, ec).string();
@@ -775,11 +877,28 @@ private:
             Json::Value combined = Json::Value::array();
             std::string errors;
 
+            // 0. aidoku-run (new-format) sources run in parallel with everything else
+            bool wantV2 = (filter == "all" || aidokurun::isV2Source(filter)) && arun_.available();
+            std::string v2Err;
+            std::future<Json::Value> v2Fut;
+            if (wantV2) {
+                std::string only = (filter == "all") ? "" : filter;
+                v2Fut = std::async(std::launch::async, [this, query, only, &v2Err]() {
+                    return arun_.search(query, only, &v2Err);
+                });
+            }
+            auto collectV2 = [&]() {
+                if (!v2Fut.valid()) return;
+                Json::Value items = v2Fut.get();
+                for (const auto& m : items.asArray()) combined.push(enrichItem(m));
+                if (!v2Err.empty() && filter != "all" && items.empty()) errors = v2Err;
+            };
+
             // 1. MangaDex results (if filter is "all" or "mangadex")
             if (filter == "all" || filter == "mangadex") {
                 std::string mdErr;
                 Json::Value mdItems = mangadex_.queryMangaList(query, mode, &mdErr);
-                if (searchSeq_.load() != mySeq) return;
+                if (searchSeq_.load() != mySeq) { collectV2(); return; }
                 if (mdItems.isArray()) {
                     for (const auto& m : mdItems.asArray()) {
                         combined.push(enrichItem(m));
@@ -791,7 +910,14 @@ private:
             }
 
             // 2. Aidoku results (if filter is "all" or specific Aidoku source)
-            if (filter != "mangadex") {
+            bool hasLegacyInstalled = false;
+            if (filter == "all" || isRakuyomiSource(filter)) {
+                Json::Value installedNow = buildInstalledSourcesList(nullptr);
+                for (const auto& s : installedNow.asArray()) {
+                    if (isRakuyomiSource(s["id"].str())) { hasLegacyInstalled = true; break; }
+                }
+            }
+            if (filter != "mangadex" && !aidokurun::isV2Source(filter) && hasLegacyInstalled) {
                 bool online = false;
                 Json::Value installed = buildInstalledSourcesList(&online);
                 if (online && !installed.empty()) {
@@ -810,7 +936,7 @@ private:
                         }
                         if (!hitCache) {
                             rawItems = aidoku_.searchMangas("", &aiErr);
-                            if (searchSeq_.load() != mySeq) return;
+                            if (searchSeq_.load() != mySeq) { collectV2(); return; }
                             if (aiErr.empty() && rawItems.isArray() && !rawItems.empty()) {
                                 std::lock_guard<std::mutex> lock(discoverMu_);
                                 discoverCache_ = rawItems;
@@ -821,7 +947,7 @@ private:
                         rawItems = aidoku_.searchMangas(query, &aiErr);
                     }
 
-                    if (searchSeq_.load() != mySeq) return;
+                    if (searchSeq_.load() != mySeq) { collectV2(); return; }
 
                     for (const auto& m : rawItems.asArray()) {
                         std::string sid = m["source"]["id"].str(m["source_id"].str());
@@ -834,7 +960,7 @@ private:
                     if (query.empty() && combined.empty() && aiErr.empty()) {
                         std::string fbErr;
                         Json::Value fbItems = aidoku_.searchMangas("a", &fbErr);
-                        if (searchSeq_.load() != mySeq) return;
+                        if (searchSeq_.load() != mySeq) { collectV2(); return; }
                         for (const auto& m : fbItems.asArray()) {
                             std::string sid = m["source"]["id"].str(m["source_id"].str());
                             if (sid == "multi.mangadex") continue;
@@ -849,7 +975,23 @@ private:
                 }
             }
 
+            collectV2();
             if (searchSeq_.load() != mySeq) return;
+
+            // Keep search payloads reasonably small for the QML side (and well below the IPC
+            // socket buffer, see appload_ipc.hpp): trim descriptions, drop trailing results.
+            for (auto& it : combined.asArrayMut()) {
+                std::string d = it["description"].str();
+                if (d.size() > 240) {
+                    size_t cut = 240;
+                    while (cut > 0 && (static_cast<unsigned char>(d[cut]) & 0xC0) == 0x80) --cut;  // UTF-8 safe
+                    it["description"] = d.substr(0, cut) + "...";
+                }
+            }
+            while (combined.size() > 20 && Json::stringify(combined).size() > 900000) {
+                auto& arr = combined.asArrayMut();
+                arr.resize(arr.size() * 9 / 10);
+            }
             Json::Value done = Json::Value::object();
             done["query"] = query;
             done["source_filter"] = filter;
@@ -933,6 +1075,8 @@ private:
                     }
                     freshChapters = mangadex_.getChapters(mangaId, &err);
                 }
+            } else if (aidokurun::isV2Source(sourceId)) {
+                freshChapters = fetchV2Chapters(sourceId, mangaId, mangaTitle, &err);
             } else {
                 if (forceRefresh || cached.empty()) {
                     Json::Value preCached = aidoku_.listCachedChapters(sourceId, mangaId, nullptr);
@@ -999,6 +1143,12 @@ private:
                     Json::Value fetched = mangadex_.getChapters(mangaId, &chErr);
                     if (fetched.isArray() && !fetched.empty()) {
                         chapters = state_.mergeAndCacheChapters(sourceId, "MangaDex", mangaId, mangaTitle, fetched);
+                    }
+                } else if (aidokurun::isV2Source(sourceId)) {
+                    std::string chErr;
+                    Json::Value fetched = fetchV2Chapters(sourceId, mangaId, mangaTitle, &chErr);
+                    if (fetched.isArray() && !fetched.empty()) {
+                        chapters = state_.mergeAndCacheChapters(sourceId, sourceName, mangaId, mangaTitle, fetched);
                     }
                 } else if (aidoku_.ensureRunning()) {
                     Json::Value fetched = aidoku_.listCachedChapters(sourceId, mangaId, nullptr);
@@ -1123,7 +1273,7 @@ private:
 
                 spawnAsync([this, sid, sname, mid, title, coverUrl, add, req]() {
                     std::string err;
-                    if (sid != "mangadex") {
+                    if (isRakuyomiSource(sid)) {
                         if (add) aidoku_.addToLibrary(sid, mid, &err);
                         else aidoku_.removeFromLibrary(sid, mid, &err);
                     }
@@ -1157,7 +1307,7 @@ private:
                 state_.saveProgress(sid, sname, mid, mtitle, cid, chNum, hasNum, chTitle,
                                     pageIdx, pageCount, completed);
 
-                if (completed && sid != "mangadex") {
+                if (completed && isRakuyomiSource(sid)) {
                     spawnAsync([this, sid, mid, cid]() {
                         aidoku_.markChapterRead(sid, mid, cid, nullptr);
                     });
@@ -1181,7 +1331,7 @@ private:
                 std::string cid = req["chapter_id"].str();
                 bool read = req["read"].boolean(true);
                 state_.markChapterRead(sid, mid, cid, read);
-                if (read && sid != "mangadex") {
+                if (read && isRakuyomiSource(sid)) {
                     spawnAsync([this, sid, mid, cid]() {
                         aidoku_.markChapterRead(sid, mid, cid, nullptr);
                     });
@@ -1273,19 +1423,19 @@ private:
                 bool includeAvail = req["include_available"].boolean(true);
                 spawnAsync([this, includeAvail]() {
                     Json::Value cfg = aidoku_.getSourceConfig();
-                    bool hasLists = cfg["source_lists"].isArray() && !cfg["source_lists"].empty();
+                    bool hasLists = hasAnySourceLists();
                     Json::Value ev = Json::Value::object();
                     bool online = false;
                     ev["installed"] = buildInstalledSourcesList(&online);
                     ev["available"] = Json::Value::array();
                     ev["source_config"] = cfg;
-                    ev["loading"] = includeAvail && online && hasLists;
+                    ev["loading"] = includeAvail && hasLists;
                     ev["error"] = "";
                     ipc_.sendJson(EVT_SOURCES_LIST, ev);
 
-                    if (includeAvail && online && hasLists) {
+                    if (includeAvail && hasLists) {
                         std::string availErr;
-                        Json::Value avail = aidoku_.listAvailableSources(&availErr);
+                        Json::Value avail = listAllAvailableSources(online, &availErr);
                         Json::Value ev2 = Json::Value::object();
                         ev2["installed"] = buildInstalledSourcesList(nullptr);
                         ev2["available"] = avail.isArray() ? avail : Json::Value::array();
@@ -1304,7 +1454,13 @@ private:
 
                 spawnAsync([this, sid, install]() {
                     std::string err;
-                    bool ok = install ? aidoku_.installSource(sid, &err) : aidoku_.uninstallSource(sid, &err);
+                    bool ok;
+                    if (aidokurun::isV2Source(sid)) {
+                        ok = install ? arun_.install(sid, aidoku_.v2SourceLists(), aidoku_.languages(), &err)
+                                     : arun_.uninstall(sid, &err);
+                    } else {
+                        ok = install ? aidoku_.installSource(sid, &err) : aidoku_.uninstallSource(sid, &err);
+                    }
                     invalidateDiscoverCache();
                     if (!ok) {
                         sendToast("Source error: " + err, true);
@@ -1312,10 +1468,11 @@ private:
                         sendToast(install ? ("Installed " + sid) : ("Removed " + sid));
                     }
                     Json::Value cfg = aidoku_.getSourceConfig();
-                    bool hasLists = cfg["source_lists"].isArray() && !cfg["source_lists"].empty();
+                    bool hasLists = hasAnySourceLists();
                     Json::Value ev = Json::Value::object();
-                    ev["installed"] = buildInstalledSourcesList(nullptr);
-                    Json::Value avail = hasLists ? aidoku_.listAvailableSources(nullptr) : Json::Value::array();
+                    bool online = false;
+                    ev["installed"] = buildInstalledSourcesList(&online);
+                    Json::Value avail = hasLists ? listAllAvailableSources(online, nullptr) : Json::Value::array();
                     ev["available"] = avail.isArray() ? avail : Json::Value::array();
                     ev["source_config"] = cfg;
                     ev["loading"] = false;
@@ -1362,12 +1519,14 @@ private:
                     }
 
                     invalidateDiscoverCache();
+                    applyLanguages();
+                    arun_.applyLanguageSettingAll(aidoku_.languages());
                     Json::Value cfg = aidoku_.getSourceConfig();
-                    bool hasLists = cfg["source_lists"].isArray() && !cfg["source_lists"].empty();
+                    bool hasLists = hasAnySourceLists();
                     bool online = false;
                     Json::Value installed = buildInstalledSourcesList(&online);
 
-                    if (online && hasLists) {
+                    if (hasLists) {
                         Json::Value loadingEv = Json::Value::object();
                         loadingEv["installed"] = installed;
                         loadingEv["available"] = Json::Value::array();
@@ -1378,8 +1537,8 @@ private:
                     }
 
                     std::string availErr;
-                    Json::Value avail = (online && hasLists) ? aidoku_.listAvailableSources(&availErr)
-                                                             : Json::Value::array();
+                    Json::Value avail = hasLists ? listAllAvailableSources(online, &availErr)
+                                                 : Json::Value::array();
                     Json::Value doneEv = Json::Value::object();
                     doneEv["installed"] = buildInstalledSourcesList(&online);
                     doneEv["available"] = avail.isArray() ? avail : Json::Value::array();
