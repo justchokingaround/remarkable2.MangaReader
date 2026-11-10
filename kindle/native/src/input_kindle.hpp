@@ -142,7 +142,11 @@ private:
 
         int cur_x = 0;
         int cur_y = 0;
+        int last_x = -1;
+        int last_y = -1;
         bool is_down = false;
+        bool touch_active = false;
+        bool tracking_active = false;
 
         while (running_) {
             int ret = poll(fds, num_fds, 50);
@@ -161,25 +165,29 @@ private:
                         } else if (ev[i].code == ABS_MT_POSITION_Y || ev[i].code == ABS_Y) {
                             cur_y = ev[i].value;
                         } else if (ev[i].code == ABS_MT_TRACKING_ID) {
-                            if (ev[i].value >= 0 && !is_down) {
-                                is_down = true;
-                            } else if (ev[i].value < 0 && is_down) {
-                                is_down = false;
-                                int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
-                                int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
-                                printf("InputKindle: TOUCH_UP raw=(%d, %d) mapped=(%d, %d)\n", cur_x, cur_y, mx, my);
-                                pushEvent({EventType::TOUCH_UP, mx, my});
-                            }
+                            tracking_active = (ev[i].value >= 0);
                         }
                     } else if (ev[i].type == EV_KEY && ev[i].code == BTN_TOUCH) {
-                        if (ev[i].value == 1 && !is_down) {
+                        touch_active = (ev[i].value == 1);
+                    } else if (ev[i].type == EV_SYN && ev[i].code == SYN_REPORT) {
+                        bool current_down = tracking_active || touch_active;
+                        int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
+                        int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
+
+                        if (current_down && !is_down) {
                             is_down = true;
-                        } else if (ev[i].value == 0 && is_down) {
+                            last_x = mx;
+                            last_y = my;
+                            pushEvent({EventType::TOUCH_DOWN, mx, my});
+                        } else if (!current_down && is_down) {
                             is_down = false;
-                            int mx = (rotation_ == 180) ? (1263 - cur_x) : cur_x;
-                            int my = (rotation_ == 180) ? (1679 - cur_y) : cur_y;
-                            printf("InputKindle: TOUCH_UP raw=(%d, %d) mapped=(%d, %d)\n", cur_x, cur_y, mx, my);
                             pushEvent({EventType::TOUCH_UP, mx, my});
+                        } else if (current_down && is_down) {
+                            if (abs(mx - last_x) > 4 || abs(my - last_y) > 4) {
+                                last_x = mx;
+                                last_y = my;
+                                pushEvent({EventType::TOUCH_MOVE, mx, my});
+                            }
                         }
                     }
                 }

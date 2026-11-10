@@ -153,9 +153,19 @@ public:
         return ret == 0;
     }
 
-    // Full screen refresh (e.g. when switching views or clearing ghosting)
+    // Full screen refresh (e.g. when clearing ghosting)
     bool refreshFull(WaveformMode mode = WAVEFORM_GC16) {
         return update(0, 0, WIDTH, HEIGHT, mode, UPDATE_FULL);
+    }
+
+    // Fast, non-flashing full view refresh (GLR16 regal partial update, ~120ms, zero black flash)
+    bool refreshView(WaveformMode mode = WAVEFORM_GLR16) {
+        return update(0, 0, WIDTH, HEIGHT, mode, UPDATE_PARTIAL);
+    }
+
+    // Direct fast update (DU 1-bit, ~30-40ms, zero flash)
+    bool refreshDirect(int x = 0, int y = 0, int w = WIDTH, int h = HEIGHT) {
+        return update(x, y, w, h, WAVEFORM_DU, UPDATE_PARTIAL);
     }
 
     // Fast UI touch refresh (A2 mode)

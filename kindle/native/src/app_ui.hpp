@@ -284,7 +284,7 @@ private:
                 if (available_sources_page_ + 1 < totalPages) {
                     available_sources_page_++;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
                 return;
             }
@@ -298,7 +298,7 @@ private:
                        current_view_ == ViewState::DOWNLOADS) {
                 scroll_offset_ += 350;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -307,7 +307,7 @@ private:
                 if (available_sources_page_ > 0) {
                     available_sources_page_--;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
                 return;
             }
@@ -321,13 +321,56 @@ private:
                        current_view_ == ViewState::DOWNLOADS) {
                 scroll_offset_ = std::max(0, scroll_offset_ - 350);
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
+            return;
+        }
+
+        if (ev.type == EventType::TOUCH_DOWN) {
+            handleTouchDown(ev.x, ev.y);
             return;
         }
 
         if (ev.type == EventType::TOUCH_UP) {
             handleTouch(ev.x, ev.y);
+            return;
+        }
+    }
+
+    void handleTouchDown(int x, int y) {
+        touch_down_x_ = x;
+        touch_down_y_ = y;
+        touch_is_down_ = true;
+
+        if (show_keyboard_ && y >= KB_START_Y && y < KB_START_Y + 4 * KB_ROW_H) {
+            highlightKeyAt(x, y, true);
+            return;
+        }
+
+        // Bottom navigation bar instant touch-down highlight
+        if (y >= SCREEN_H - NAV_H && current_view_ != ViewState::READER) {
+            int tab_w = SCREEN_W / 5;
+            int tab = x / tab_w;
+            if (tab >= 0 && tab < 5) {
+                canvas_.fillRect(tab * tab_w + 5, SCREEN_H - NAV_H + 5, tab_w - 10, NAV_H - 10, 0x40);
+                display_.update(tab * tab_w + 5, SCREEN_H - NAV_H + 5, tab_w - 10, NAV_H - 10, WAVEFORM_DU, UPDATE_PARTIAL);
+            }
+            return;
+        }
+
+        // Top bar buttons instant touch-down highlight
+        if (y >= 10 && y <= TOP_H - 10 && current_view_ != ViewState::READER) {
+            if (x >= SCREEN_W - 155) {
+                canvas_.fillRect(SCREEN_W - 155, 15, 135, 50, 0x40);
+                display_.update(SCREEN_W - 155, 15, 135, 50, WAVEFORM_DU, UPDATE_PARTIAL);
+            } else if (x >= SCREEN_W - 325) {
+                canvas_.fillRect(SCREEN_W - 325, 15, 155, 50, 0x40);
+                display_.update(SCREEN_W - 325, 15, 155, 50, WAVEFORM_DU, UPDATE_PARTIAL);
+            } else if (x >= SCREEN_W - 470) {
+                canvas_.fillRect(SCREEN_W - 470, 15, 130, 50, 0x40);
+                display_.update(SCREEN_W - 470, 15, 130, 50, WAVEFORM_DU, UPDATE_PARTIAL);
+            }
+            return;
         }
     }
 
@@ -353,30 +396,30 @@ private:
                     current_view_ = ViewState::LIBRARY;
                     loadLibraryFromDisk();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 } else if (selected_tab_ == 1) {
                     current_view_ = ViewState::RECENT;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 } else if (selected_tab_ == 2) {
                     current_view_ = ViewState::BROWSE;
                     if (browse_mangas_.empty()) {
                         status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
                         renderAll();
-                        display_.refreshFull(WAVEFORM_GC16);
+                        display_.refreshView();
                         fetchPopular();
                     }
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 } else if (selected_tab_ == 3) {
                     current_view_ = ViewState::DOWNLOADS;
                     loadLibraryFromDisk();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 } else if (selected_tab_ == 4) {
                     current_view_ = ViewState::SETTINGS;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
             }
             return;
@@ -399,7 +442,7 @@ private:
                         performSearch(search_query_);
                     } else {
                         renderAll();
-                        display_.refreshFull(WAVEFORM_GC16);
+                        display_.refreshView();
                     }
                     return;
                 }
@@ -407,7 +450,7 @@ private:
                     show_keyboard_ = false;
                     current_view_ = ViewState::SOURCES;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
                 if (x < SCREEN_W - 470) {
@@ -418,7 +461,7 @@ private:
             // Tap outside keyboard dismisses it
             show_keyboard_ = false;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -459,7 +502,7 @@ private:
                     loadMangaChapters(selected_manga_);
                 }
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
 
@@ -478,7 +521,7 @@ private:
                     loadMangaChapters(selected_manga_);
                 }
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
 
@@ -486,7 +529,7 @@ private:
             if (x >= dialogX + 245 && x <= dialogX + 615 && y >= dialogY + 355 && y <= dialogY + 415) {
                 show_remove_modal_ = false;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         } else {
@@ -506,7 +549,7 @@ private:
                     loadMangaChapters(selected_manga_);
                 }
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
 
@@ -514,7 +557,7 @@ private:
             if (x >= dialogX + 470 && x <= dialogX + 790 && y >= dialogY + 250 && y <= dialogY + 310) {
                 show_remove_modal_ = false;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -523,7 +566,7 @@ private:
         if (x < dialogX || x > dialogX + dialogW || y < dialogY || y > dialogY + dialogH) {
             show_remove_modal_ = false;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
     }
@@ -558,7 +601,7 @@ private:
                     remove_modal_dl_count_ = countDownloadedChapters(manga_to_remove_.title);
                     show_remove_modal_ = true;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
 
@@ -572,7 +615,7 @@ private:
                 scroll_offset_ = 0;
                 status_banner_.clear();
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -590,7 +633,7 @@ private:
         if (!recent.empty() && x >= SCREEN_W - 350 && x < SCREEN_W - 190 && y >= 10 && y <= TOP_H) {
             state_.clearAllHistory();
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -608,11 +651,11 @@ private:
                 if (browse_mangas_.empty()) {
                     status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     fetchPopular();
                 }
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -654,7 +697,7 @@ private:
                     scroll_offset_ = 0;
                     status_banner_.clear();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
 
@@ -774,7 +817,7 @@ private:
                 show_keyboard_ = false;
                 current_view_ = ViewState::SOURCES;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             } else if (x >= SCREEN_W - 470) {
                 if (!search_query_.empty()) {
@@ -782,13 +825,13 @@ private:
                 } else {
                     show_keyboard_ = true;
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
                 return;
             } else {
                 show_keyboard_ = true;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -808,7 +851,7 @@ private:
                     browse_page_ = 0;
                     fetchPopular();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
                 pill_x += 210;
@@ -857,7 +900,7 @@ private:
                 scroll_offset_ = 0;
                 status_banner_.clear();
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -880,7 +923,7 @@ private:
             scroll_offset_ = 0;
             status_banner_.clear();
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -903,7 +946,7 @@ private:
                 remove_modal_dl_count_ = countDownloadedChapters(selected_manga_.title);
                 show_remove_modal_ = true;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             } else {
                 state_.toggleLibrary(selected_manga_);
@@ -911,7 +954,7 @@ private:
                 status_banner_ = "✓ Added \"" + selected_manga_.title + "\" to Library";
                 loadLibraryFromDisk();
                 renderDetail();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -922,7 +965,7 @@ private:
             sortChapters();
             chapter_page_ = 0;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1055,7 +1098,7 @@ private:
                 Frontlight::setIntensity(cur);
                 state_.save();
                 renderSettings();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
             if (x >= 480 && x <= 570) { // [+] drawn at x=490, w=70
@@ -1065,7 +1108,7 @@ private:
                 Frontlight::setIntensity(cur);
                 state_.save();
                 renderSettings();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
         }
@@ -1079,7 +1122,7 @@ private:
             }
             state_.save();
             renderSettings();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1091,7 +1134,7 @@ private:
             state_.save();
             status_banner_ = "Touch orientation: " + std::string(newRot == 180 ? "Buttons Left (180°)" : "Buttons Right (0°)");
             renderSettings();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1108,7 +1151,7 @@ private:
             fs::remove_all("/mnt/us/manga/.cache", ec);
             status_banner_ = "Reader & cover cache cleared successfully!";
             renderSettings();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1116,6 +1159,14 @@ private:
         if (x >= 100 && x <= SCREEN_W - 100 && y >= 660 && y <= 740) {
             loadLibraryFromDisk();
             status_banner_ = "Library refreshed (" + std::to_string(library_mangas_.size()) + " manga)!";
+            renderSettings();
+            display_.refreshView();
+            return;
+        }
+
+        // Full Refresh Screen button: x: 100..SCREEN_W-100, y: 755..835
+        if (x >= 100 && x <= SCREEN_W - 100 && y >= 755 && y <= 835) {
+            status_banner_ = "Screen refreshed (ghosting cleared)";
             renderSettings();
             display_.refreshFull(WAVEFORM_GC16);
             return;
@@ -1134,7 +1185,7 @@ private:
             show_keyboard_ = false;
             current_view_ = ViewState::BROWSE;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1149,7 +1200,7 @@ private:
                 if (!available_sources_loaded_) {
                     status_banner_ = "Fetching extensions from repository...";
                     renderSources();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     std::string err;
                     available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
                     available_sources_loaded_ = true;
@@ -1160,7 +1211,7 @@ private:
                 sources_sub_tab_ = SourcesSubTab::REPOSITORIES;
             }
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1186,7 +1237,7 @@ private:
                 if (srcList[i].is_aidoku && x >= SCREEN_W - 365 && x < SCREEN_W - 210) {
                     status_banner_ = "Uninstalling " + srcList[i].name + "...";
                     renderSources();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     std::string err;
                     if (sources_.uninstallAidokuSource(srcList[i].id, &err)) {
                         status_banner_ = "✓ Uninstalled " + srcList[i].name;
@@ -1195,7 +1246,7 @@ private:
                         status_banner_ = "Failed: " + err;
                     }
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
 
@@ -1205,7 +1256,7 @@ private:
                     status_banner_ = "Active source: " + srcList[i].name;
                     fetchPopular();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
             }
@@ -1218,7 +1269,7 @@ private:
             if (!available_sources_loaded_) {
                 status_banner_ = "Fetching extensions from repository...";
                 renderSources();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 std::string err;
                 available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
                 available_sources_loaded_ = true;
@@ -1226,7 +1277,7 @@ private:
                 else status_banner_.clear();
             }
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
     }
@@ -1236,14 +1287,14 @@ private:
             if (y >= startY + 90 && y <= startY + 175) {
                 status_banner_ = "Fetching extensions from repository...";
                 renderSources();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 std::string err;
                 available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
                 available_sources_loaded_ = true;
                 if (!err.empty()) status_banner_ = "Repository error: " + err;
                 else status_banner_ = "✓ Loaded " + std::to_string(available_aidoku_sources_.size()) + " available extensions";
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -1256,14 +1307,14 @@ private:
         if (x >= 25 && x <= 285 && y >= headerY && y <= headerY + 55) {
             status_banner_ = "Refreshing extensions from repository...";
             renderSources();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             std::string err;
             available_aidoku_sources_ = sources_.getAvailableAidokuSources(&err);
             available_sources_loaded_ = true;
             if (!err.empty()) status_banner_ = "Repository error: " + err;
             else status_banner_ = "✓ Catalog refreshed (" + std::to_string(available_aidoku_sources_.size()) + " extensions)";
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1272,7 +1323,7 @@ private:
             if (available_sources_page_ > 0) {
                 available_sources_page_--;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -1282,7 +1333,7 @@ private:
             if (available_sources_page_ + 1 < totalPages) {
                 available_sources_page_++;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -1301,7 +1352,7 @@ private:
                     printf("handleAvailableSourcesTouch: Installing source '%s' (%s)\n", s.id.c_str(), s.name.c_str());
                     status_banner_ = "Installing " + s.name + "...";
                     renderSources();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     std::string err;
                     if (sources_.installAidokuSource(s.id, &err)) {
                         status_banner_ = "✓ Successfully installed " + s.name;
@@ -1310,7 +1361,7 @@ private:
                         status_banner_ = "Install error: " + (err.empty() ? "Installation failed" : err);
                     }
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
             }
@@ -1329,13 +1380,13 @@ private:
                 if (x >= SCREEN_W - 190 && x <= SCREEN_W - 40) {
                     status_banner_ = "Removing repository...";
                     renderSources();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     std::string err;
                     sources_.removeSourceListUrl(url, &err);
                     available_sources_loaded_ = false;
                     status_banner_ = "Removed repository URL.";
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
             }
@@ -1353,7 +1404,7 @@ private:
             kb_target_ = KeyboardTarget::REPO_URL;
             show_keyboard_ = true;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1363,7 +1414,7 @@ private:
                 status_banner_ = "Adding repository URL...";
                 show_keyboard_ = false;
                 renderSources();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 std::string err;
                 if (sources_.addSourceListUrl(repo_url_input_, &err)) {
                     status_banner_ = "✓ Added repository! Fetching catalog...";
@@ -1375,7 +1426,7 @@ private:
                     status_banner_ = "Failed: " + err;
                 }
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             }
             return;
         }
@@ -1385,7 +1436,7 @@ private:
         if (x >= 25 && x <= SCREEN_W - 25 && y >= btnRowY && y <= btnRowY + 65) {
             status_banner_ = "Adding Aidoku Community repository...";
             renderSources();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             std::string err;
             std::string officialUrl = "https://raw.githubusercontent.com/Aidoku-Community/legacy-sources/refs/heads/gh-pages/index.min.json";
             if (sources_.addSourceListUrl(officialUrl, &err)) {
@@ -1397,7 +1448,7 @@ private:
                 status_banner_ = "Failed: " + err;
             }
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
     }
@@ -1413,13 +1464,13 @@ private:
                     reader_show_overlay_ = false;
                     input_.clear();
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
                 // Tap elsewhere on top bar: close overlay
                 reader_show_overlay_ = false;
                 renderReader();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
 
@@ -1431,7 +1482,7 @@ private:
                     state_.settings().frontlight = cur;
                     Frontlight::setIntensity(cur);
                     renderReader();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
                 if (x >= SCREEN_W / 2 && x <= SCREEN_W / 2 + 80) { // Light [+]
@@ -1440,7 +1491,7 @@ private:
                     state_.settings().frontlight = cur;
                     Frontlight::setIntensity(cur);
                     renderReader();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
                 if (x >= SCREEN_W / 2 + 85 && x <= SCREEN_W / 2 + 240) { // Mode
@@ -1451,7 +1502,7 @@ private:
                     }
                     state_.save();
                     renderReader();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
             }
@@ -1465,7 +1516,7 @@ private:
                 } else {
                     reader_show_overlay_ = false;
                     renderReader();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
                 return;
             }
@@ -1473,7 +1524,7 @@ private:
             // Tap elsewhere dismisses overlay
             reader_show_overlay_ = false;
             renderReader();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1482,7 +1533,7 @@ private:
         if (y <= 120 || (x >= SCREEN_W * 0.3 && x <= SCREEN_W * 0.7 && y >= SCREEN_H * 0.25 && y <= SCREEN_H * 0.75)) {
             reader_show_overlay_ = true;
             renderReader();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
             return;
         }
 
@@ -1942,7 +1993,7 @@ private:
             if (firstUpdate) {
                 // Clear stale pixels from whatever Kindle screen was visible before
                 // the detail view, before the synchronous network request begins.
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
             } else {
                 display_.refreshUI(25, 290, SCREEN_W - 50, 85);
             }
@@ -1980,7 +2031,7 @@ private:
                 download_active_ = false;
                 status_banner_ = "Failed fetching pages: " + (err.empty() ? "Empty page list" : err);
                 renderDetail();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             }
 
@@ -2103,7 +2154,7 @@ private:
         }
 
         renderDetail();
-        display_.refreshFull(WAVEFORM_GC16);
+        display_.refreshView();
     }
 
     void cacheCoversForBrowse() {
@@ -2134,7 +2185,7 @@ private:
     void fetchPopular() {
         status_banner_ = "Loading popular manga from " + sources_.getActiveSourceId() + "...";
         renderAll();
-        display_.refreshFull(WAVEFORM_GC16);
+        display_.refreshView();
 
         std::string err;
         browse_mangas_ = sources_.getPopular(&err);
@@ -2147,7 +2198,7 @@ private:
         scroll_offset_ = 0;
         browse_page_ = 0;
         renderAll();
-        display_.refreshFull(WAVEFORM_GC16);
+        display_.refreshView();
     }
 
     static double parseChapterNumber(const std::string& s) {
@@ -2183,7 +2234,7 @@ private:
         if (browse_page_ < total_pages - 1) {
             browse_page_++;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
         }
     }
 
@@ -2191,7 +2242,7 @@ private:
         if (browse_page_ > 0) {
             browse_page_--;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
         }
     }
 
@@ -2200,7 +2251,7 @@ private:
         if (chapter_page_ < total_pages - 1) {
             chapter_page_++;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
         }
     }
 
@@ -2208,7 +2259,7 @@ private:
         if (chapter_page_ > 0) {
             chapter_page_--;
             renderAll();
-            display_.refreshFull(WAVEFORM_GC16);
+            display_.refreshView();
         }
     }
 
@@ -2267,6 +2318,110 @@ private:
         int tx = x + (w - tw) / 2;
         int ty = y + (h - fontSize) / 2;
         font_.drawText(canvas_, tx, ty, label, fontSize, fg, true);
+    }
+
+    void highlightKeyAt(int x, int y, bool inverted = true) {
+        if (y < KB_START_Y || y >= KB_START_Y + 4 * KB_ROW_H) return;
+        int row = (y - KB_START_Y) / KB_ROW_H;
+        if (row < 0 || row > 3) return;
+
+        int kx = 0, ky = 0, kw = 0, kh = KB_KEY_H;
+        std::string label;
+        bool isFunc = false;
+        int fontSize = 30;
+
+        if (row == 0) {
+            int col = std::max(0, std::min(9, (x - 20) / KB_KEY_STEP));
+            kx = 26 + col * KB_KEY_STEP;
+            ky = KB_START_Y;
+            kw = KB_KEY_W;
+            fontSize = 32;
+            if (kb_symbols_mode_) {
+                const char* syms[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
+                label = syms[col];
+            } else {
+                const char* letters_up[] = { "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P" };
+                const char* letters_low[] = { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" };
+                label = kb_shift_active_ ? letters_up[col] : letters_low[col];
+            }
+        } else if (row == 1) {
+            int col = std::max(0, std::min(8, (x - 60) / KB_KEY_STEP));
+            kx = 87 + col * KB_KEY_STEP;
+            ky = KB_START_Y + KB_ROW_H;
+            kw = KB_KEY_W;
+            fontSize = 32;
+            if (kb_symbols_mode_) {
+                const char* syms[] = { "-", "/", ":", ";", "(", ")", "$", "&", "@" };
+                label = syms[col];
+            } else {
+                const char* letters_up[] = { "A", "S", "D", "F", "G", "H", "J", "K", "L" };
+                const char* letters_low[] = { "a", "s", "d", "f", "g", "h", "j", "k", "l" };
+                label = kb_shift_active_ ? letters_up[col] : letters_low[col];
+            }
+        } else if (row == 2) {
+            ky = KB_START_Y + 2 * KB_ROW_H;
+            if (x < 195) {
+                kx = 26;
+                kw = 175;
+                label = kb_shift_active_ ? "⇧ Shift" : "⇧";
+                isFunc = true;
+                fontSize = 26;
+            } else if (x >= 1050) {
+                kx = 1063;
+                kw = 175;
+                label = "⌫";
+                isFunc = true;
+                fontSize = 28;
+            } else {
+                int col = std::max(0, std::min(6, (x - 195) / KB_KEY_STEP));
+                kx = 209 + col * KB_KEY_STEP;
+                kw = KB_KEY_W;
+                fontSize = 32;
+                if (kb_symbols_mode_) {
+                    const char* syms[] = { ".", ",", "?", "!", "'", "\"", "_" };
+                    label = syms[col];
+                } else {
+                    const char* letters_up[] = { "Z", "X", "C", "V", "B", "N", "M" };
+                    const char* letters_low[] = { "z", "x", "c", "v", "b", "n", "m" };
+                    label = kb_shift_active_ ? letters_up[col] : letters_low[col];
+                }
+            }
+        } else if (row == 3) {
+            ky = KB_START_Y + 3 * KB_ROW_H;
+            if (x < 170) {
+                kx = 26;
+                kw = 140;
+                label = kb_symbols_mode_ ? "ABC" : "?123";
+                isFunc = true;
+                fontSize = 24;
+            } else if (x < 305) {
+                kx = 174;
+                kw = 130;
+                label = "Clear";
+                isFunc = true;
+                fontSize = 22;
+            } else if (x < 805) {
+                kx = 312;
+                kw = 490;
+                label = "space";
+                fontSize = 24;
+            } else if (x < 940) {
+                kx = 810;
+                kw = 130;
+                label = "Close";
+                isFunc = true;
+                fontSize = 22;
+            } else {
+                kx = 948;
+                kw = 290;
+                label = (kb_target_ == KeyboardTarget::REPO_URL) ? "Done ↵" : "Search ↵";
+                isFunc = false;
+                fontSize = 26;
+            }
+        }
+
+        renderKey(kx, ky, kw, kh, label, inverted, isFunc, fontSize);
+        display_.update(kx, ky, kw, kh, WAVEFORM_DU, UPDATE_PARTIAL);
     }
 
     std::string& getActiveInputText() {
@@ -2408,7 +2563,7 @@ private:
                 // Close / Hide
                 show_keyboard_ = false;
                 renderAll();
-                display_.refreshFull(WAVEFORM_GC16);
+                display_.refreshView();
                 return;
             } else {
                 // Done or Search
@@ -2417,7 +2572,7 @@ private:
                     if (!repo_url_input_.empty()) {
                         status_banner_ = "Adding repository URL...";
                         renderAll();
-                        display_.refreshFull(WAVEFORM_GC16);
+                        display_.refreshView();
                         std::string err;
                         if (sources_.addSourceListUrl(repo_url_input_, &err)) {
                             status_banner_ = "✓ Added repository! Fetching catalog...";
@@ -2430,7 +2585,7 @@ private:
                         }
                     }
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                     return;
                 }
 
@@ -2438,7 +2593,7 @@ private:
                     performSearch(search_query_);
                 } else {
                     renderAll();
-                    display_.refreshFull(WAVEFORM_GC16);
+                    display_.refreshView();
                 }
                 return;
             }
@@ -2449,7 +2604,7 @@ private:
         show_keyboard_ = false;
         status_banner_ = "Searching " + sources_.getActiveSourceId() + " for: " + query;
         renderAll();
-        display_.refreshFull(WAVEFORM_GC16);
+        display_.refreshView();
 
         std::string err;
         browse_mangas_ = sources_.search(query, &err);
@@ -2464,7 +2619,7 @@ private:
         scroll_offset_ = 0;
         browse_page_ = 0;
         renderAll();
-        display_.refreshFull(WAVEFORM_GC16);
+        display_.refreshView();
     }
 
     void drawCoverThumbnail(int x, int y, int w, int h, const std::string& pathOrUrl, const std::string& fallbackTitle, const std::string& mangaId = "") {
@@ -3253,6 +3408,10 @@ private:
         y = 660;
         // Refresh Library Button
         font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 75, "Rescan Manga Storage", false, 24);
+
+        y = 755;
+        // Manual Full Refresh Screen Button
+        font_.drawButton(canvas_, 100, y, SCREEN_W - 200, 75, "Full Refresh Screen (Clear Ghosting)", false, 24);
     }
 
     void renderReader() {
