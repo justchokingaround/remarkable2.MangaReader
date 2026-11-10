@@ -33,6 +33,7 @@ mkdir -p '${REMOTE_DIR}/backend' '${REMOTE_DIR}/data'
 pkill -f '${REMOTE_DIR}/backend/entry' 2>/dev/null || true
 tar --no-same-owner -xf - -C '${REMOTE_DIR}'
 chmod 755 '${REMOTE_DIR}/backend/entry'
+chmod 755 '${REMOTE_DIR}/backend/curl' '${REMOTE_DIR}/backend/aidoku-run' 2>/dev/null || true
 chmod 755 /home/root/xovi/exthome/appload/koreader/plugins/rakuyomi.koplugin/server 2>/dev/null || true"
 
 if [[ "${RESTART_XOCHITL}" -eq 1 ]]; then
@@ -41,7 +42,12 @@ systemctl restart xochitl"
 fi
 
 echo "==> Deploying AppLoad bundle to ${RM_HOST}:${REMOTE_DIR}..."
-tar --no-mac-metadata -C "${DIST_DIR}" -cf - manifest.json icon.png resources.rcc backend/entry \
+# --no-mac-metadata only exists in macOS bsdtar; GNU tar (Linux) rejects it
+TAR_ARGS=()
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    TAR_ARGS+=(--no-mac-metadata)
+fi
+tar ${TAR_ARGS[@]+"${TAR_ARGS[@]}"} -C "${DIST_DIR}" -cf - manifest.json icon.png resources.rcc backend/entry \
     | ssh "${SSH_ARGS[@]}" "${RM_HOST}" "${REMOTE_CMD}"
 
 if [[ "${RESTART_XOCHITL}" -eq 1 ]]; then
