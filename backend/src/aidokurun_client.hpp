@@ -79,7 +79,7 @@ class Client {
     std::mutex semMu_;
     std::condition_variable semCv_;
     int running_ = 0;
-    static constexpr int kMaxParallel = 4;
+    static constexpr int kMaxParallel = 2;  // each aidoku-run ~30MB RSS; rM2 has no swap
 
     std::mutex discoverMu_;
     std::map<std::string, std::pair<int64_t, Json::Value>> discoverCache_;  // sid -> (ts, items)

@@ -328,7 +328,7 @@ private:
         md["builtin"] = true;
         list.push(md);
 
-        bool online = aidoku_.ensureRunning();
+        bool online = aidoku_.hasLegacySources() && aidoku_.ensureRunning();
         if (aidokuOnlineOut) *aidokuOnlineOut = online;
         Json::Value v2 = arun_.listInstalled();
         if (online) {
@@ -349,7 +349,7 @@ private:
     }
 
     void syncAidokuIntoStore(bool refreshRemoteChapters = false) {
-        if (!aidoku_.ensureRunning()) return;
+        if (!aidoku_.hasLegacySources() || !aidoku_.ensureRunning()) return;
 
         std::string err;
         Json::Value lib = aidoku_.getLibrary(&err);
@@ -1150,7 +1150,7 @@ private:
                     if (fetched.isArray() && !fetched.empty()) {
                         chapters = state_.mergeAndCacheChapters(sourceId, sourceName, mangaId, mangaTitle, fetched);
                     }
-                } else if (aidoku_.ensureRunning()) {
+                } else if (aidoku_.hasLegacySources() && aidoku_.ensureRunning()) {
                     Json::Value fetched = aidoku_.listCachedChapters(sourceId, mangaId, nullptr);
                     if (!fetched.isArray() || fetched.empty()) {
                         aidoku_.refreshChapters(sourceId, mangaId, nullptr);

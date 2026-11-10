@@ -149,6 +149,7 @@ public:
     }
 
     std::vector<std::string> legacySourceLists() const { return readStringArray(readSettingsRaw()["source_lists"]); }
+    bool hasLegacySources() const { return !legacySourceLists().empty(); }
     std::vector<std::string> v2SourceLists() const { return readStringArray(readSettingsRaw()[kV2Key]); }
     std::vector<std::string> languages() const {
         auto l = readStringArray(readSettingsRaw()["languages"]);
