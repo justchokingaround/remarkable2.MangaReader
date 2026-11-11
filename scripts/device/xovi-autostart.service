@@ -1,0 +1,13 @@
+[Unit]
+Description=XOVI / AppLoad boot hook (rm2manga)
+After=xochitl.service home.mount
+Wants=xochitl.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/root/xovi/autostart.sh
+RemainAfterExit=yes
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,8 @@ fi
 REMOTE_CMD="set -e
 mkdir -p '${REMOTE_DIR}/backend' '${REMOTE_DIR}/data'
 pkill -f '${REMOTE_DIR}/backend/entry' 2>/dev/null || true
+# AppLoad starts the backend with a relative path (backend/entry /tmp/rm2manga.sock)
+pkill -f '^backend/entry /tmp/rm2manga' 2>/dev/null || true
 tar --no-same-owner -xf - -C '${REMOTE_DIR}'
 chmod 755 '${REMOTE_DIR}/backend/entry'
 chmod 755 '${REMOTE_DIR}/backend/curl' '${REMOTE_DIR}/backend/aidoku-run' 2>/dev/null || true

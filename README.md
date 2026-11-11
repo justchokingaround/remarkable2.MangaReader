@@ -41,6 +41,12 @@
   - Display modes: `Fit Page`, `Trim Margins`, `Full Width` (1:1 vertical drag), and `2x Zoom`.
   - Ghosting reduction: on-demand **Clear Ghost** button and periodic e-paper waveform refresh.
   - **Zero-Wait Chapter Preloading**: Automatically downloads and unpacks the next chapter in the background when approaching the end of the current one.
+- 📊 **AniList Tracking (offline-first)**:
+  - Your AniList lists (Reading / Planning / Completed / …) are cached on the device, with "▶ Ch. N" showing where to pick up.
+  - Finishing a chapter updates AniList automatically; progress never goes backwards on its own.
+  - Progress made on AniList (e.g. reading on your phone) is mirrored into local read marks, so Continue Reading stays correct.
+  - Works fully offline: changes are queued and flushed when Wi-Fi returns, with 3-way merge. If both sides changed (reread started, entry removed, status changed to Dropped/Completed, or an edit raced one made on AniList), the device asks which progress to keep.
+  - Connecting needs no typing: a temporary local web page with a QR code hands the ~1000-character token from your phone to the device.
 - 🔌 **Dual-Engine Source Architecture**:
   - **Native MangaDex v5 Engine**: High-resolution covers, metadata, authors, and chapter feeds with DDoS-compliant API negotiation.
   - **Aidoku WASM Plugin Support**: Install and browse external community sources (e.g. MangaFox, MangaKatana, Toonily) directly from user-supplied source lists.
@@ -114,6 +120,35 @@ nano /home/root/xovi/exthome/appload/rm2manga/data/aidoku/settings.json
 
 ---
 
+## 🔁 Surviving reMarkable OS Updates
+
+XOVI / AppLoad live outside the OS: the binaries, extensions and hashtable are in
+`/home/root/xovi`, which is untouched by updates. What an OS update *does* destroy is
+`/etc` (systemd units) and the Qt resource hashtable, which is built against the exact
+`xochitl` binary. When that happens "My Apps" disappears from the sidebar until XOVI is
+re-applied. Three scripts in `/home/root/xovi` (source: `scripts/device/`) deal with it:
+
+| Script | Purpose |
+| --- | --- |
+| `/home/root/xovi/autostart.sh` | Boot hook: rebuilds the hashtable when `xochitl` changed, then runs `xovi/start`. Logs to `/home/root/xovi/autostart.log`. |
+| `/home/root/xovi/after-update.sh` | Run **once after an OS update**: re-installs the boot hook systemd unit, rebuilds the hashtable if needed, starts XOVI. |
+| `/home/root/xovi/os-updates.sh` | `disable` / `enable` / `status` for automatic OS updates. |
+
+```bash
+# After an OS update ("My Apps" gone):
+ssh root@<tablet> /home/root/xovi/after-update.sh
+
+# Turn reMarkable's automatic updates off (they install silently within 30 min of
+# reMarkable's servers publishing one) — or back on when you want to update:
+ssh root@<tablet> /home/root/xovi/os-updates.sh disable
+```
+
+Updates are pulled by SWUpdate (`suricatta`, poll interval 1800 s, `confirm = 0`), which is
+why an update can appear "by itself". Masking `swupdate.service`/`swupdate.socket` stops
+that; `enable` restores it.
+
+---
+
 ## 📁 Repository Structure
 
 ```text
@@ -140,11 +175,14 @@ rm2manga/
 │   ├── state_store.hpp      # Thread-safe JSON state store with atomic file I/O
 │   ├── util.hpp             # HTTP client with anti-scraping CDN headers
 │   └── json.hpp             # Lightweight header-only JSON parser
+├── backend/src/anilist*.hpp  # AniList GraphQL client, 3-way sync engine, phone setup page
 └── scripts/
     ├── build.sh             # Cross-compiles ARMv7 binary via Zig & builds RCC
     ├── deploy.sh            # One-click SSH deployment to reMarkable tablet
     ├── test_backend.py      # End-to-end integration test harness
-    └── generate_icon.py     # Standalone launcher icon generator
+    ├── test_anilist.py      # AniList sync/conflict tests against a mock GraphQL server
+    ├── generate_icon.py     # Standalone launcher icon generator
+    └── device/              # Copied to /home/root/xovi: boot hook + update-OS-handling scripts
 ```
 
 ---
@@ -171,6 +209,14 @@ The repository includes an end-to-end integration harness that simulates the App
 
 ```bash
 python3 ./scripts/test_backend.py /tmp/rm2manga_backend_host
+```
+
+AniList sync/merge/conflict handling is covered by `scripts/test_anilist.py`, which runs the
+real backend against a mock AniList GraphQL server:
+
+```bash
+./scripts/build.sh --with-host /tmp/rm2manga_backend_host
+python3 ./scripts/test_anilist.py /tmp/rm2manga_backend_host
 ```
 
 ---
