@@ -49,6 +49,7 @@
   - Connecting needs no typing: a temporary local web page with a QR code hands the ~1000-character token from your phone to the device.
 - 🔌 **Dual-Engine Source Architecture**:
   - **Native MangaDex v5 Engine**: High-resolution covers, metadata, authors, and chapter feeds with DDoS-compliant API negotiation.
+  - **Native MangaPoisk Engine**: Russian catalogue. MangaLib drops licensed titles from its catalogue (Attack on Titan, Tomodachi Game, ...) and ReManga does not carry them, while MangaDex often has no Russian scanlation, so this engine ships as a second built-in source (search, details, chapter list, pages).
   - **Aidoku WASM Plugin Support**: Install and browse external community sources (e.g. MangaFox, MangaKatana, Toonily) directly from user-supplied source lists.
 - 🖼️ **Intelligent Cover Pipeline**:
   - SQLite metadata cache directly queries the on-device Aidoku runtime database.

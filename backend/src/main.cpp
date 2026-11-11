@@ -7,6 +7,7 @@
 #include "cbz_extractor.hpp"
 #include "json.hpp"
 #include "mangadex_client.hpp"
+#include "mangapoisk_client.hpp"
 #include "state_store.hpp"
 #include "util.hpp"
 #include "third_party/qrcodegen.cpp"
@@ -105,6 +106,7 @@ class Rm2MangaApp {
     aidoku::Client aidoku_;
     aidoku::CoverDb coverDb_;
     mangadex::Client mangadex_;
+    mangapoisk::Client mpoisk_;
     aidokurun::Client arun_;
     extractor::PageCache pageCache_;
     std::unique_ptr<anilist::Tracker> anilist_;
@@ -462,6 +464,30 @@ private:
                 });
             }
             if (wantMangadex) addAll(mangadex_.queryMangaList(q, "search", &mdErr));
+            if (allowed("mangapoisk")) {
+                Json::Value mps = mpoisk_.search(q, nullptr);
+                for (const auto& m : mps.asArray()) {
+                    Json::Value item = m;
+                    Json::Value src = Json::Value::object();
+                    src["id"] = "mangapoisk";
+                    src["name"] = "MangaPoisk";
+                    item["source"] = src;
+                    std::string sid = "mangapoisk";
+                    std::string mid = m["id"].str();
+                    if (mid.empty() || !seen.insert(sid + "::" + mid).second) continue;
+                    Json::Value it = Json::Value::object();
+                    it["source_id"] = sid;
+                    it["source_name"] = "MangaPoisk";
+                    it["id"] = mid;
+                    it["title"] = m["title"].str();
+                    it["cover_url"] = m["cover_url"].str();
+                    it["author"] = "";
+                    it["description"] = "";
+                    it["in_library"] = state_.getManga(sid, mid)["in_library"].boolean(false);
+                    it["chapter_count"] = -1;
+                    out.push(std::move(it));
+                }
+            }
             if (legacyOnline && (wanted.empty() || std::any_of(wanted.begin(), wanted.end(),
                                                                [](const std::string& w) { return !aidokurun::isV2Source(w); }))) {
                 addAll(aidoku_.searchMangas(q, &aiErr));
@@ -483,6 +509,8 @@ private:
                     int n = -1;
                     if (aidokurun::isV2Source(sid)) {
                         n = arun_.chapterCount(sid, mid, nullptr);
+                    } else if (sid == "mangapoisk") {
+                        n = static_cast<int>(mpoisk_.getChapters(mid, nullptr).size());
                     } else if (sid == "mangadex") {
                         n = static_cast<int>(mangadex_.getChapters(mid, nullptr).size());
                     }
@@ -708,6 +736,7 @@ private:
             {"mangalib", "v2.ru.mangalib"}, {"cdnlibs", "v2.ru.mangalib"}, {"imglib", "v2.ru.mangalib"},
             {"hentaicdn", "v2.ru.mangalib"}, {"remanga", "v2.ru.remanga"}, {"mangadex", "mangadex"},
             {"weebcentral", "v2.en.weebcentral"}, {"mangafire", "v2.multi.mangafire"},
+            {"mangapoisk", "mangapoisk"},
         };
         std::vector<std::string> trySources;
         for (const auto& [needle, sid] : kHosts) {
@@ -742,6 +771,25 @@ private:
                 out["author"] = details["author"].str();
                 out["description"] = details["description"].str();
                 out["chapter_count"] = n > 0 ? n : -1;  // unknown beats a wrong "0 chapters"
+                return out;
+            }
+        }
+
+        // Native MangaPoisk takes a bare slug
+        if (std::find(trySources.begin(), trySources.end(), std::string("mangapoisk")) != trySources.end()) {
+            for (const auto& key : keys) {
+                mangapoisk::Client::Details d = mpoisk_.getDetails(key);
+                if (d.title.empty() && d.description.empty()) continue;
+                std::string chErr;
+                Json::Value chs = mpoisk_.getChapters(key, &chErr);
+                out["source_id"] = "mangapoisk";
+                out["source_name"] = "MangaPoisk";
+                out["manga_id"] = key;
+                out["title"] = d.title.empty() ? key : d.title;
+                out["cover_url"] = d.coverUrl;
+                out["author"] = d.author;
+                out["description"] = d.description;
+                out["chapter_count"] = static_cast<int>(chs.size());
                 return out;
             }
         }
@@ -895,6 +943,16 @@ private:
         md["builtin"] = true;
         list.push(md);
 
+        // Russian catalogue: MangaLib drops licensed titles and ReManga does not carry
+        // them, so ship a native engine for MangaPoisk as well.
+        Json::Value mp = Json::Value::object();
+        mp["id"] = "mangapoisk";
+        mp["name"] = "MangaPoisk";
+        mp["version"] = 1;
+        mp["builtin"] = true;
+        mp["language"] = "ru";
+        list.push(mp);
+
         bool online = aidoku_.hasLegacySources() && aidoku_.ensureRunning();
         if (aidokuOnlineOut) *aidokuOnlineOut = online;
         Json::Value v2 = arun_.listInstalled();
@@ -1030,6 +1088,13 @@ private:
             md["version"] = 5;
             md["builtin"] = true;
             fastMd.push(md);
+            Json::Value fastMp = Json::Value::object();
+            fastMp["id"] = "mangapoisk";
+            fastMp["name"] = "MangaPoisk";
+            fastMp["version"] = 1;
+            fastMp["builtin"] = true;
+            fastMp["language"] = "ru";
+            fastMd.push(fastMp);
             fast["installed_sources"] = std::move(fastMd);
             fast["source_config"] = aidoku_.getSourceConfig();
             fast["aidoku_online"] = false;
@@ -1227,6 +1292,26 @@ private:
             state_.recordDownload(sourceId, "MangaDex", mangaId, mangaTitle,
                                   chapterId, chapterNum, hasChapterNum, chapterTitle,
                                   chFolder.string(), true);
+            if (onProgress) onProgress("Preparing pages...", 95);
+            return pageCache_.prepareFolder(chFolder.string(), errOut);
+        }
+
+        // 2b. Native MangaPoisk engine
+        if (sourceId == "mangapoisk") {
+            fs::path chFolder = state_.localChaptersDir() / "mangapoisk" / mangaId / chapterId;
+            std::error_code ec;
+            if (!fs::exists(chFolder, ec) || fs::is_empty(chFolder, ec)) {
+                if (onProgress) onProgress("Downloading chapter from MangaPoisk...", 15);
+                std::string mpErr;
+                if (!mpoisk_.downloadChapterPages(mangaId, chapterId, chFolder, cancelFlag,
+                                                  onProgress, &mpErr)) {
+                    if (errOut) *errOut = mpErr.empty() ? "Failed downloading from MangaPoisk" : mpErr;
+                    return {};
+                }
+                state_.recordDownload(sourceId, "MangaPoisk", mangaId, mangaTitle,
+                                      chapterId, chapterNum, hasChapterNum, chapterTitle,
+                                      chFolder.string(), true);
+            }
             if (onProgress) onProgress("Preparing pages...", 95);
             return pageCache_.prepareFolder(chFolder.string(), errOut);
         }
@@ -1478,6 +1563,25 @@ private:
                 }
             }
 
+            // 1b. MangaPoisk (native Russian catalogue)
+            if (filter == "all" || filter == "mangapoisk") {
+                std::string mpErr;
+                Json::Value mpItems = mpoisk_.search(query, &mpErr);
+                if (searchSeq_.load() != mySeq) { collectV2(); return; }
+                for (const auto& m : mpItems.asArray()) {
+                    Json::Value item = m;
+                    Json::Value src = Json::Value::object();
+                    src["id"] = "mangapoisk";
+                    src["name"] = "MangaPoisk";
+                    src["version"] = 1;
+                    item["source"] = src;
+                    item["source_id"] = "mangapoisk";
+                    item["source_name"] = "MangaPoisk";
+                    combined.push(enrichItem(item));
+                }
+                if (!mpErr.empty() && filter == "mangapoisk") errors = mpErr;
+            }
+
             // 2. Aidoku results (if filter is "all" or specific Aidoku source)
             bool hasLegacyInstalled = false;
             if (filter == "all" || isRakuyomiSource(filter)) {
@@ -1649,6 +1753,21 @@ private:
                     }
                     freshChapters = mangadex_.getChapters(mangaId, &err);
                 }
+            } else if (sourceId == "mangapoisk") {
+                if (forceRefresh || cached.empty()) {
+                    mangapoisk::Client::Details d = mpoisk_.getDetails(mangaId);
+                    if (!d.title.empty()) {
+                        state_.upsertMangaMeta(sourceId, "MangaPoisk", mangaId,
+                                               d.title.empty() ? mangaTitle : d.title,
+                                               d.coverUrl, d.author, d.description,
+                                               d.status.empty() ? "" : d.status);
+                        if (!d.coverUrl.empty()) {
+                            enqueueCoverFetch(sourceId, mangaId,
+                                              d.title.empty() ? mangaTitle : d.title, d.coverUrl);
+                        }
+                    }
+                    freshChapters = mpoisk_.getChapters(mangaId, &err);
+                }
             } else if (aidokurun::isV2Source(sourceId)) {
                 freshChapters = fetchV2Chapters(sourceId, mangaId, mangaTitle, &err);
             } else {
@@ -1720,6 +1839,12 @@ private:
                     Json::Value fetched = mangadex_.getChapters(mangaId, &chErr);
                     if (fetched.isArray() && !fetched.empty()) {
                         chapters = state_.mergeAndCacheChapters(sourceId, "MangaDex", mangaId, mangaTitle, fetched);
+                    }
+                } else if (sourceId == "mangapoisk") {
+                    std::string chErr;
+                    Json::Value fetched = mpoisk_.getChapters(mangaId, &chErr);
+                    if (fetched.isArray() && !fetched.empty()) {
+                        chapters = state_.mergeAndCacheChapters(sourceId, "MangaPoisk", mangaId, mangaTitle, fetched);
                     }
                 } else if (aidokurun::isV2Source(sourceId)) {
                     std::string chErr;
