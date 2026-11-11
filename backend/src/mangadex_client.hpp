@@ -165,6 +165,16 @@ public:
         return parseMangaObject(root["data"]);
     }
 
+    // MangaDex stores tracker ids in attributes.links ("al" = AniList). 0 if unknown/offline.
+    int64_t getAniListId(const std::string& mangaId) {
+        std::string body;
+        if (!util::httpsGetString(apiBase_ + "/manga/" + util::urlEncode(mangaId), body, 20)) return 0;
+        bool ok = false;
+        Json::Value root = Json::parse(body, &ok);
+        if (!ok) return 0;
+        return root["data"]["attributes"]["links"]["al"].integer(0);
+    }
+
     Json::Value getChapters(const std::string& mangaId, std::string* errOut = nullptr) {
         Json::Value chapters = Json::Value::array();
         const bool multiLang = languageCount() > 1;

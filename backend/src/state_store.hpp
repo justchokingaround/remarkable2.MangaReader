@@ -549,6 +549,90 @@ public:
         return arr;
     }
 
+    // ---- AniList helpers -------------------------------------------------------------
+
+    // Highest chapter number (floored) marked read for a manga, 0 if none / unknown.
+    int maxReadChapter(const std::string& sourceId, const std::string& mangaId) const {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::string mkey = makeMangaKey(sourceId, mangaId);
+        const Json::Value& m = root_["mangas"][mkey];
+        const Json::Value& readMap = m["read_chapters"];
+        double best = 0;
+        for (const auto& c : root_["chapters_cache"][mkey].asArray()) {
+            if (!c.has("chapter_num")) continue;
+            if (!(readMap[c["id"].str()].boolean(false) || c["read"].boolean(false))) continue;
+            best = std::max(best, c["chapter_num"].num(0));
+        }
+        return static_cast<int>(std::floor(best + 1e-6));
+    }
+
+    // Marks every cached chapter numbered <= progress as read. Returns true if anything changed.
+    bool markReadUpTo(const std::string& sourceId, const std::string& mangaId, int progress) {
+        if (progress <= 0) return false;
+        std::lock_guard<std::mutex> lock(mu_);
+        std::string mkey = makeMangaKey(sourceId, mangaId);
+        Json::Value& cached = root_["chapters_cache"][mkey];
+        if (!cached.isArray() || cached.empty()) return false;
+        Json::Value& m = root_["mangas"][mkey];
+        if (!m.isObject()) return false;
+        if (!m["read_chapters"].isObject()) m["read_chapters"] = Json::Value::object();
+        Json::Value& readMap = m["read_chapters"];
+        bool changed = false;
+        int unread = 0;
+        for (auto& c : cached.asArrayMut()) {
+            std::string cid = c["id"].str();
+            const Json::Value& creadMap = readMap;
+            bool isRead = creadMap[cid].boolean(false) || c["read"].boolean(false);
+            if (!isRead && c.has("chapter_num") && c["chapter_num"].num(0) > 0 &&
+                c["chapter_num"].num(0) <= progress + 1e-6) {
+                readMap[cid] = true;
+                c["read"] = true;
+                isRead = true;
+                changed = true;
+            }
+            if (!isRead) ++unread;
+        }
+        if (changed) {
+            m["unread_count"] = unread;
+            saveLocked();
+        }
+        return changed;
+    }
+
+    // Chapter number from the cached list, or -1.
+    double chapterNumFor(const std::string& sourceId, const std::string& mangaId,
+                         const std::string& chapterId) const {
+        std::lock_guard<std::mutex> lock(mu_);
+        for (const auto& c : root_["chapters_cache"][makeMangaKey(sourceId, mangaId)].asArray()) {
+            if (c["id"].str() == chapterId) return c.has("chapter_num") ? c["chapter_num"].num(-1) : -1;
+        }
+        return -1;
+    }
+
+    // Library mangas plus anything read in the last 60 days: what the user actually follows.
+    std::vector<Json::Value> listTrackCandidates() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        std::vector<Json::Value> out;
+        int64_t cutoff = util::nowSeconds() - 60LL * 86400;
+        for (const auto& kv : root_["mangas"].asObject()) {
+            const Json::Value& m = kv.second;
+            if (!m["in_library"].boolean(false) && m["last_read_at"].integer(0) < cutoff) continue;
+            if (m["source_id"].str().empty() || m["manga_id"].str().empty()) continue;
+            Json::Value c = Json::Value::object();
+            c["source_id"] = m["source_id"].str();
+            c["source_name"] = m["source_name"].str();
+            c["manga_id"] = m["manga_id"].str();
+            c["title"] = m["title"].str();
+            c["description"] = m["description"].str();
+            c["last_read_at"] = m["last_read_at"].integer(0);
+            out.push_back(std::move(c));
+        }
+        std::sort(out.begin(), out.end(), [](const Json::Value& a, const Json::Value& b) {
+            return a["last_read_at"].integer(0) > b["last_read_at"].integer(0);
+        });
+        return out;
+    }
+
     std::vector<Json::Value> listMangasMissingCovers() const {
         std::lock_guard<std::mutex> lock(mu_);
         std::vector<Json::Value> out;

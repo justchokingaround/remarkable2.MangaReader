@@ -1,12 +1,15 @@
 #include "aidoku_client.hpp"
 #include "aidoku_db.hpp"
 #include "aidokurun_client.hpp"
+#include "anilist_setup.hpp"
+#include "anilist_tracker.hpp"
 #include "appload_ipc.hpp"
 #include "cbz_extractor.hpp"
 #include "json.hpp"
 #include "mangadex_client.hpp"
 #include "state_store.hpp"
 #include "util.hpp"
+#include "third_party/qrcodegen.cpp"
 
 #include <algorithm>
 #include <atomic>
@@ -45,6 +48,16 @@ constexpr int32_t REQ_LIST_SOURCES = 12;
 constexpr int32_t REQ_INSTALL_SOURCE = 13;
 constexpr int32_t REQ_UPDATE_SETTINGS = 14;
 constexpr int32_t REQ_SAVE_SOURCE_CONFIG = 15;
+constexpr int32_t REQ_ANILIST_STATE = 20;
+constexpr int32_t REQ_ANILIST_SYNC = 21;
+constexpr int32_t REQ_ANILIST_CONNECT = 22;
+constexpr int32_t REQ_ANILIST_LOGOUT = 23;
+constexpr int32_t REQ_ANILIST_SEARCH = 24;
+constexpr int32_t REQ_ANILIST_LINK = 25;
+constexpr int32_t REQ_ANILIST_UPDATE = 26;
+constexpr int32_t REQ_ANILIST_RESOLVE = 27;
+constexpr int32_t REQ_ANILIST_FIND_SOURCES = 28;
+constexpr int32_t REQ_ANILIST_MANGA_INFO = 29;
 
 // Backend -> Frontend event message types
 constexpr int32_t EVT_BOOTSTRAP = 100;
@@ -57,6 +70,11 @@ constexpr int32_t EVT_DOWNLOADS_UPDATED = 106;
 constexpr int32_t EVT_SOURCES_LIST = 107;
 constexpr int32_t EVT_COVER_UPDATED = 108;
 constexpr int32_t EVT_TOAST = 109;
+constexpr int32_t EVT_ANILIST_STATE = 120;
+constexpr int32_t EVT_ANILIST_CONNECT = 121;
+constexpr int32_t EVT_ANILIST_SEARCH = 122;
+constexpr int32_t EVT_MANGA_ANILIST = 123;
+constexpr int32_t EVT_ANILIST_SOURCES = 124;
 
 struct DownloadTask {
     std::string key;
@@ -87,6 +105,15 @@ class Rm2MangaApp {
     mangadex::Client mangadex_;
     aidokurun::Client arun_;
     extractor::PageCache pageCache_;
+    std::unique_ptr<anilist::Tracker> anilist_;
+    std::unique_ptr<anilist::SetupServer> alSetup_;
+
+    // AniList background sync worker
+    std::mutex alMu_;
+    std::condition_variable alCv_;
+    std::chrono::steady_clock::time_point alDueAt_ = std::chrono::steady_clock::time_point::max();
+    bool alManual_ = false;
+    std::thread alWorker_;
 
     std::atomic<bool> shuttingDown_{false};
     std::atomic<bool> shutdownJoined_{false};
@@ -138,6 +165,7 @@ public:
                          ? std::getenv("RM2MANGA_PAGE_CACHE_DIR")
                          : "/tmp/rm2manga_pages") {
         applyLanguages();
+        initAniList(workDir / "data");
     }
 
     ~Rm2MangaApp() {
@@ -150,6 +178,7 @@ public:
         }
         dlWorker_ = std::thread([this]() { downloadLoop(); });
         coverWorker_ = std::thread([this]() { coverLoop(); });
+        alWorker_ = std::thread([this]() { anilistLoop(); });
         return true;
     }
 
@@ -168,10 +197,13 @@ public:
         cancelActiveDl_ = true;
         dlCv_.notify_all();
         coverCv_.notify_all();
+        alCv_.notify_all();
+        if (alSetup_) alSetup_->stop();
         ipc_.closeSocket();
 
         if (dlWorker_.joinable()) dlWorker_.join();
         if (coverWorker_.joinable()) coverWorker_.join();
+        if (alWorker_.joinable()) alWorker_.join();
 
         while (true) {
             std::list<WorkerSlot> batch;
@@ -220,6 +252,393 @@ private:
             if (w.th.joinable()) {
                 w.th.join();
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ AniList
+
+    void initAniList(const fs::path& dataDir) {
+        anilist::Hooks h;
+        h.maxReadChapter = [this](const std::string& sid, const std::string& mid) {
+            return state_.maxReadChapter(sid, mid);
+        };
+        h.markReadUpTo = [this](const std::string& sid, const std::string& mid, int progress) {
+            return state_.markReadUpTo(sid, mid, progress);
+        };
+        h.hasCachedChapters = [this](const std::string& sid, const std::string& mid) {
+            return !state_.getCachedChapters(sid, mid).empty();
+        };
+        h.autoLinkCandidates = [this]() { return state_.listTrackCandidates(); };
+        h.mangadexAniListId = [this](const std::string& mid) { return mangadex_.getAniListId(mid); };
+        h.mangaInfo = [this](const std::string& sid, const std::string& mid) {
+            Json::Value m = state_.getManga(sid, mid);
+            Json::Value o = Json::Value::object();
+            o["title"] = m["title"].str(mid);
+            o["source_name"] = m["source_name"].str(sid);
+            o["description"] = m["description"].str();
+            return o;
+        };
+        h.downloadFile = [](const std::string& url, const fs::path& dest) {
+            return util::httpsDownloadFile(url, dest, 20);
+        };
+        anilist_ = std::make_unique<anilist::Tracker>(dataDir, std::move(h));
+
+        anilist::SetupServer::Callbacks cb;
+        cb.clientId = [this]() { return anilist_->clientId(); };
+        cb.setClientId = [this](const std::string& id) {
+            anilist_->setClientId(id);
+            pushAnilistConnect();
+        };
+        cb.submitToken = [this](const std::string& tok, std::string* user) {
+            return anilist_->connect(tok, user);
+        };
+        cb.onConnected = [this](const std::string& user) {
+            sendToast("AniList connected as " + user);
+            Json::Value ev = Json::Value::object();
+            ev["running"] = false;
+            ev["connected"] = true;
+            ipc_.sendJson(EVT_ANILIST_CONNECT, ev);
+            pushAnilistState();
+            requestAnilistSync(0, true);
+        };
+        alSetup_ = std::make_unique<anilist::SetupServer>(std::move(cb));
+    }
+
+    void requestAnilistSync(int delaySec, bool manual = false) {
+        if (!anilist_ || !anilist_->connected()) return;
+        std::lock_guard<std::mutex> lk(alMu_);
+        auto due = std::chrono::steady_clock::now() + std::chrono::seconds(delaySec);
+        if (due < alDueAt_) alDueAt_ = due;
+        if (manual) alManual_ = true;
+        alCv_.notify_all();
+    }
+
+    void anilistLoop() {
+        int backoff = 60;
+        while (!shuttingDown_.load()) {
+            bool manual = false;
+            {
+                std::unique_lock<std::mutex> lk(alMu_);
+                alCv_.wait_until(lk, alDueAt_ == std::chrono::steady_clock::time_point::max()
+                                         ? std::chrono::steady_clock::now() + std::chrono::hours(1)
+                                         : alDueAt_,
+                                 [this]() {
+                                     return shuttingDown_.load() || std::chrono::steady_clock::now() >= alDueAt_;
+                                 });
+                if (shuttingDown_.load()) break;
+                if (std::chrono::steady_clock::now() < alDueAt_) continue;
+                alDueAt_ = std::chrono::steady_clock::time_point::max();
+                manual = alManual_;
+                alManual_ = false;
+            }
+            if (!anilist_->connected()) continue;
+
+            anilist_->markSyncing();
+            pushAnilistState();  // shows "Syncing..."
+            anilist::SyncOutcome r = anilist_->sync();
+            if (shuttingDown_.load()) break;
+
+            int nextIn;
+            if (r.ok) {
+                backoff = 60;
+                nextIn = 30 * 60;  // refresh the list periodically while the app is open
+                if (manual && r.newConflicts == 0) {
+                    sendToast(r.pushed > 0 ? ("AniList synced (" + std::to_string(r.pushed) + " updated)")
+                                           : "AniList is up to date");
+                }
+            } else if (r.authError) {
+                nextIn = -1;  // wait for reconnect
+                sendToast("AniList login expired: reconnect in the AniList tab", true);
+            } else {
+                // Offline / rate limited / server error: retry with backoff (cheap when Wi-Fi is off)
+                nextIn = backoff;
+                backoff = std::min(backoff * 2, 15 * 60);
+                if (manual) sendToast(r.offline ? "AniList: offline, changes are saved and will sync later"
+                                                : ("AniList: " + r.error), true);
+            }
+            if (r.newConflicts > 0) {
+                sendToast("AniList: " + std::to_string(r.newConflicts) +
+                          (r.newConflicts == 1 ? " entry needs" : " entries need") + " your decision");
+            }
+            if (r.localChanged) pushLibraryEvent();
+            Json::Value st = anilist_->listState();
+            st["local_changed"] = r.localChanged;
+            ipc_.sendJson(EVT_ANILIST_STATE, st);
+            if (nextIn > 0) requestAnilistSync(nextIn);
+        }
+    }
+
+    void pushAnilistState() {
+        if (!anilist_) return;
+        ipc_.sendJson(EVT_ANILIST_STATE, anilist_->listState());
+    }
+
+    void pushAnilistConnect(const std::string& error = "") {
+        Json::Value ev = Json::Value::object();
+        bool running = alSetup_ && alSetup_->running();
+        ev["running"] = running;
+        ev["connected"] = anilist_->connected();
+        ev["client_id_set"] = !anilist_->clientId().empty();
+        ev["error"] = error;
+        Json::Value urls = Json::Value::array();
+        if (running) {
+            for (const auto& u : alSetup_->urls()) urls.push(u);
+            if (!urls.empty()) ev["qr"] = anilist::SetupServer::qrRows(urls[size_t(0)].str());
+        }
+        ev["urls"] = urls;
+        ipc_.sendJson(EVT_ANILIST_CONNECT, ev);
+    }
+
+    void pushMangaAnilist(const std::string& sid, const std::string& mid) {
+        Json::Value ev = Json::Value::object();
+        ev["source_id"] = sid;
+        ev["manga_id"] = mid;
+        ev["anilist"] = anilist_->detailInfo(sid, mid);
+        ipc_.sendJson(EVT_MANGA_ANILIST, ev);
+    }
+
+    void onLocalChapterRead(const std::string& sid, const std::string& mid, double chapterNum) {
+        if (!anilist_ || !anilist_->connected()) return;
+        if (anilist_->onChapterRead(sid, mid, chapterNum)) {
+            requestAnilistSync(8);  // short delay batches consecutive chapters
+            pushAnilistState();
+        }
+    }
+
+    // Searches the selected installed sources for an AniList entry's titles (AniList tab).
+    // `probe` also asks each hit how many chapters it has, so entries whose chapters are
+    // hidden (MangaLib licensed titles, region blocks, ...) are obvious before opening one.
+    Json::Value searchSourcesForTitles(const std::vector<std::string>& titles,
+                                       const std::vector<std::string>& onlySources,
+                                       bool probe, std::string* errOut) {
+        Json::Value out = Json::Value::array();
+        std::set<std::string> seen;
+        std::set<std::string> wanted(onlySources.begin(), onlySources.end());
+        auto allowed = [&](const std::string& sid) {
+            return wanted.empty() || wanted.count(sid) > 0;
+        };
+        auto addAll = [&](const Json::Value& items) {
+            for (const auto& m : items.asArray()) {
+                std::string sid = m["source"]["id"].str(m["source_id"].str());
+                if (sid == "multi.mangadex" || !allowed(sid)) continue;
+                std::string mid = m["id"].str(m["manga_id"].str());
+                if (sid.empty() || mid.empty() || !seen.insert(sid + "::" + mid).second) continue;
+                Json::Value it = Json::Value::object();
+                it["source_id"] = sid;
+                it["source_name"] = m["source"]["name"].str(m["source_name"].str(sid));
+                it["id"] = mid;
+                it["title"] = m["title"].str(mid);
+                it["cover_url"] = m["cover_url"].str();
+                it["author"] = m["author"].str();
+                std::string d = m["description"].str();
+                if (d.size() > 240) {
+                    size_t cut = 240;
+                    while (cut > 0 && (static_cast<unsigned char>(d[cut]) & 0xC0) == 0x80) --cut;
+                    d = d.substr(0, cut) + "...";
+                }
+                it["description"] = d;
+                Json::Value stored = state_.getManga(sid, mid);
+                it["in_library"] = stored["in_library"].boolean(false);
+                if (!stored["cover_path"].str().empty()) it["cover_path"] = stored["cover_path"].str();
+                it["chapter_count"] = -1;  // unknown
+                out.push(std::move(it));
+            }
+        };
+
+        bool legacyOnline = aidoku_.hasLegacySources() && aidoku_.ensureRunning();
+        bool wantMangadex = allowed("mangadex");
+        for (size_t i = 0; i < titles.size() && i < 2; ++i) {
+            const std::string& q = titles[i];
+            if (util::trim(q).empty()) continue;
+            std::string v2Err, mdErr, aiErr;
+            std::future<Json::Value> v2;
+            if (arun_.available() && (wanted.empty() || std::any_of(wanted.begin(), wanted.end(), aidokurun::isV2Source))) {
+                std::vector<std::string> only;
+                for (const auto& w : wanted) if (aidokurun::isV2Source(w)) only.push_back(w);
+                v2 = std::async(std::launch::async, [this, q, only, &v2Err]() {
+                    return arun_.search(q, only.size() == 1 ? only[0] : "", &v2Err);
+                });
+            }
+            if (wantMangadex) addAll(mangadex_.queryMangaList(q, "search", &mdErr));
+            if (legacyOnline && (wanted.empty() || std::any_of(wanted.begin(), wanted.end(),
+                                                               [](const std::string& w) { return !aidokurun::isV2Source(w); }))) {
+                addAll(aidoku_.searchMangas(q, &aiErr));
+            }
+            if (v2.valid()) addAll(v2.get());
+            if (errOut && errOut->empty() && out.empty()) {
+                *errOut = !mdErr.empty() ? mdErr : (!v2Err.empty() ? v2Err : aiErr);
+            }
+        }
+
+        if (probe && !out.empty()) {
+            // Cap the probing: each runs the source's wasm in its own process (~30MB).
+            size_t cap = std::min<size_t>(out.size(), 6);
+            std::vector<std::thread> ths;
+            for (size_t i = 0; i < cap; ++i) {
+                ths.emplace_back([&, i]() {
+                    std::string sid = out[i]["source_id"].str();
+                    std::string mid = out[i]["id"].str();
+                    int n = -1;
+                    if (aidokurun::isV2Source(sid)) {
+                        n = arun_.chapterCount(sid, mid, nullptr);
+                    } else if (sid == "mangadex") {
+                        n = static_cast<int>(mangadex_.getChapters(mid, nullptr).size());
+                    }
+                    out.asArrayMut()[i]["chapter_count"] = n;
+                });
+            }
+            for (auto& t : ths) t.join();
+            // Usable entries first, then the rest (keep discovery order inside each group)
+            std::stable_sort(out.asArrayMut().begin(), out.asArrayMut().end(),
+                             [](const Json::Value& a, const Json::Value& b) {
+                                 int ca = static_cast<int>(a["chapter_count"].integer(-1));
+                                 int cb = static_cast<int>(b["chapter_count"].integer(-1));
+                                 bool ua = ca != 0, ub = cb != 0;
+                                 return ua && !ub;
+                             });
+        }
+        if (!out.empty() && errOut) errOut->clear();
+        return out;
+    }
+
+    void handleAniList(int32_t msgType, const Json::Value& req) {
+        switch (msgType) {
+            case REQ_ANILIST_STATE:
+                pushAnilistState();
+                break;
+            case REQ_ANILIST_SYNC:
+                if (!anilist_->connected()) break;
+                requestAnilistSync(0, true);
+                break;
+            case REQ_ANILIST_CONNECT: {
+                if (req["start"].boolean(true)) {
+                    std::string err;
+                    if (!alSetup_->start()) err = "Could not open a local port for the setup page";
+                    else if (alSetup_->urls().empty()) err = "Turn on Wi-Fi so your phone can reach the reMarkable";
+                    pushAnilistConnect(err);
+                } else {
+                    alSetup_->stop();
+                    pushAnilistConnect();
+                }
+                break;
+            }
+            case REQ_ANILIST_LOGOUT:
+                anilist_->logout();
+                pushAnilistState();
+                sendToast("Disconnected from AniList");
+                break;
+            case REQ_ANILIST_SEARCH: {
+                std::string q = util::trim(req["query"].str());
+                std::string sid = req["source_id"].str();
+                std::string mid = req["manga_id"].str();
+                spawnAsync([this, q, sid, mid]() {
+                    std::string err;
+                    Json::Value res = q.empty() ? anilist_->searchForManga(sid, mid, &err)
+                                                : anilist_->search(q, &err);
+                    for (auto& m : res.asArrayMut()) {
+                        if (m["list_entry"].isObject()) {
+                            m["list_status_label"] = anilist::statusLabel(m["list_entry"]["status"].str());
+                            m["list_progress"] = m["list_entry"]["progress"].integer(0);
+                        }
+                    }
+                    Json::Value ev = Json::Value::object();
+                    ev["source_id"] = sid;
+                    ev["manga_id"] = mid;
+                    ev["query"] = q;
+                    ev["results"] = res;
+                    ev["error"] = (res.empty() && err.empty()) ? "No matches on AniList" : err;
+                    ipc_.sendJson(EVT_ANILIST_SEARCH, ev);
+                });
+                break;
+            }
+            case REQ_ANILIST_LINK: {
+                std::string sid = req["source_id"].str();
+                std::string mid = req["manga_id"].str();
+                Json::Value media = req["media"];
+                if (sid.empty() || mid.empty()) break;
+                // Make sure the manga exists in the local store (linking from the AniList tab)
+                if (!req["manga_title"].str().empty()) {
+                    state_.upsertMangaMeta(sid, req["source_name"].str(sid), mid, req["manga_title"].str(),
+                                           req["cover_url"].str(), req["author"].str(), req["description"].str());
+                }
+                bool changed = false;
+                if (media.isObject() && media["media_id"].integer(0) > 0) {
+                    changed = anilist_->link(sid, mid, media, false);
+                    sendToast("Linked to AniList: " + media["title"].str());
+                } else {
+                    anilist_->unlink(sid, mid);
+                    sendToast("AniList link removed");
+                }
+                if (changed) pushLibraryEvent();
+                pushMangaAnilist(sid, mid);
+                Json::Value st = anilist_->listState();
+                st["local_changed"] = changed;
+                ipc_.sendJson(EVT_ANILIST_STATE, st);
+                requestAnilistSync(2);
+                break;
+            }
+            case REQ_ANILIST_UPDATE: {
+                int64_t media = req["media_id"].integer(0);
+                if (media <= 0) break;
+                anilist_->explicitUpdate(media, req["progress"].integer(0), req["status"].str());
+                if (!req["source_id"].str().empty()) pushMangaAnilist(req["source_id"].str(), req["manga_id"].str());
+                pushAnilistState();
+                requestAnilistSync(1);
+                break;
+            }
+            case REQ_ANILIST_RESOLVE: {
+                int64_t media = req["media_id"].integer(0);
+                if (media <= 0) break;
+                std::string choice = req["choice"].str("remote");
+                anilist_->resolveConflict(media, choice);
+                pushLibraryEvent();
+                Json::Value st = anilist_->listState();
+                st["local_changed"] = true;
+                ipc_.sendJson(EVT_ANILIST_STATE, st);
+                if (choice == "local") requestAnilistSync(1);
+                break;
+            }
+            case REQ_ANILIST_FIND_SOURCES: {
+                int64_t media = req["media_id"].integer(0);
+                std::vector<std::string> titles;
+                for (const auto& t : req["titles"].asArray()) {
+                    std::string s = util::trim(t.str());
+                    if (s.empty()) continue;
+                    bool dup = false;
+                    for (const auto& e : titles) dup |= anilist::normalizeTitle(e) == anilist::normalizeTitle(s);
+                    if (!dup) titles.push_back(s);
+                }
+                // The chosen source filter is persisted so it is remembered next time
+                std::vector<std::string> only;
+                if (req.has("sources")) {
+                    for (const auto& s : req["sources"].asArray()) {
+                        if (!s.str().empty()) only.push_back(s.str());
+                    }
+                    anilist_->setSearchSources(only);
+                } else {
+                    only = anilist_->searchSources();
+                }
+                bool probe = req.has("probe") ? req["probe"].boolean(true) : true;
+                spawnAsync([this, media, titles, only, probe]() {
+                    std::string err;
+                    Json::Value res = searchSourcesForTitles(titles, only, probe, &err);
+                    Json::Value ev = Json::Value::object();
+                    ev["media_id"] = media;
+                    ev["results"] = res;
+                    Json::Value sel = Json::Value::array();
+                    for (const auto& sid : only) sel.push(sid);
+                    ev["sources"] = sel;
+                    ev["probed"] = probe;
+                    ev["error"] = res.empty() ? (err.empty() ? "Not found on your selected sources" : err) : "";
+                    ipc_.sendJson(EVT_ANILIST_SOURCES, ev);
+                });
+                break;
+            }
+            case REQ_ANILIST_MANGA_INFO:
+                pushMangaAnilist(req["source_id"].str(), req["manga_id"].str());
+                break;
+            default:
+                break;
         }
     }
 
@@ -492,6 +911,8 @@ private:
         full["source_config"] = aidoku_.getSourceConfig();
         full["aidoku_online"] = aidokuOnline;
         ipc_.sendJson(EVT_BOOTSTRAP, full);
+        pushAnilistState();
+        requestAnilistSync(2);
     }
 
     // Chronological ascending sort + deduplicated neighbor selection
@@ -1042,10 +1463,15 @@ private:
                 ev["resume_page"] = m["last_page_index"].integer(0);
                 ev["loading"] = loading;
                 ev["error"] = err;
+                ev["anilist"] = anilist_->detailInfo(sid, mid);
                 ipc_.sendJson(EVT_MANGA_DETAILS, ev);
             };
 
             Json::Value cached = state_.getCachedChapters(sourceId, mangaId);
+            if (!cached.empty() && anilist_->onChaptersCached(sourceId, mangaId)) {
+                cached = state_.getCachedChapters(sourceId, mangaId);
+                pushLibraryEvent();
+            }
             if (!cached.empty()) {
                 sendDetailsPayload(sourceId, mangaId, cached, forceRefresh, "");
                 if (!forceRefresh) {
@@ -1091,6 +1517,9 @@ private:
 
             if (freshChapters.isArray() && !freshChapters.empty()) {
                 Json::Value merged = state_.mergeAndCacheChapters(sourceId, sourceName, mangaId, mangaTitle, freshChapters);
+                if (anilist_->onChaptersCached(sourceId, mangaId)) {
+                    merged = state_.getCachedChapters(sourceId, mangaId);
+                }
                 enqueueCoverFetch(sourceId, mangaId, mangaTitle, "");
                 sendDetailsPayload(sourceId, mangaId, merged, false, "");
                 pushLibraryEvent();
@@ -1241,6 +1670,11 @@ private:
         bool ok = false;
         Json::Value req = contents.empty() ? Json::Value::object() : Json::parse(contents, &ok);
 
+        if (msgType >= REQ_ANILIST_STATE && msgType <= REQ_ANILIST_MANGA_INFO) {
+            handleAniList(msgType, req);
+            return;
+        }
+
         switch (msgType) {
             case REQ_BOOTSTRAP: {
                 spawnAsync([this]() { pushBootstrap(); });
@@ -1281,6 +1715,10 @@ private:
                                            req["author"].str(), req["description"].str(), "",
                                            add ? 1 : 0);
                     if (add) enqueueCoverFetch(sid, mid, title, coverUrl);
+                    if (add && anilist_->connected()) {
+                        anilist_->onLibraryAdd(sid, mid);
+                        requestAnilistSync(3);
+                    }
                     pushLibraryEvent();
                     sendToast(add ? ("Added \"" + title + "\" to Library") : ("Removed from Library"));
                 });
@@ -1312,6 +1750,9 @@ private:
                         aidoku_.markChapterRead(sid, mid, cid, nullptr);
                     });
                 }
+                if (completed) {
+                    onLocalChapterRead(sid, mid, hasNum ? chNum : state_.chapterNumFor(sid, mid, cid));
+                }
 
                 // Pre-download & pre-extract next chapter when within 3 pages of end
                 if (pageCount > 0 && pageIdx >= pageCount - 3 &&
@@ -1336,6 +1777,7 @@ private:
                         aidoku_.markChapterRead(sid, mid, cid, nullptr);
                     });
                 }
+                if (read) onLocalChapterRead(sid, mid, state_.chapterNumFor(sid, mid, cid));
                 pushLibraryEvent();
                 break;
             }

@@ -28,6 +28,16 @@ Rectangle {
     readonly property int reqInstallSource: 13
     readonly property int reqUpdateSettings: 14
     readonly property int reqSaveSourceConfig: 15
+    readonly property int reqAnilistState: 20
+    readonly property int reqAnilistSync: 21
+    readonly property int reqAnilistConnect: 22
+    readonly property int reqAnilistLogout: 23
+    readonly property int reqAnilistSearch: 24
+    readonly property int reqAnilistLink: 25
+    readonly property int reqAnilistUpdate: 26
+    readonly property int reqAnilistResolve: 27
+    readonly property int reqAnilistFindSources: 28
+    readonly property int reqAnilistMangaInfo: 29
 
     readonly property int evtBootstrap: 100
     readonly property int evtLibraryUpdated: 101
@@ -39,10 +49,15 @@ Rectangle {
     readonly property int evtSourcesList: 107
     readonly property int evtCoverUpdated: 108
     readonly property int evtToast: 109
+    readonly property int evtAnilistState: 120
+    readonly property int evtAnilistConnect: 121
+    readonly property int evtAnilistSearch: 122
+    readonly property int evtMangaAnilist: 123
+    readonly property int evtAnilistSources: 124
 
     // Global state
     property bool bootstrapped: false
-    property string activeTab: "library"   // "library" | "recent" | "browse" | "downloads"
+    property string activeTab: "library"   // "library" | "recent" | "browse" | "downloads" | "anilist"
     property string activeOverlay: "none"  // "none" | "detail" | "reader"
     property string returnOverlayAfterReader: "detail"
 
@@ -72,6 +87,19 @@ Rectangle {
     property string fitMode: "contain"
     property bool invertSwipe: false
     property int ghostRefreshPages: 20
+
+    // AniList
+    property var anilistState: ({})
+    property var anilistConnect: ({})
+    property var alSearchResults: []
+    property bool alSearching: false
+    property string alSearchError: ""
+    property var alSourceResults: []
+    property bool alSourcesLoading: false
+    property string alSourcesError: ""
+    property var alSourceFilter: []
+    property bool conflictsSnoozed: false
+    readonly property int anilistConflictCount: (anilistState && anilistState.conflict_count) ? anilistState.conflict_count : 0
 
     function sendReq(msgType, payloadObj) {
         endpoint.sendMessage(msgType, JSON.stringify(payloadObj || {}));
@@ -105,6 +133,7 @@ Rectangle {
         mangaDetailView.chapters = [];
         mangaDetailView.loading = true;
         mangaDetailView.errorMessage = "";
+        mangaDetailView.anilistInfo = ({});
         activeOverlay = "detail";
 
         sendReq(reqMangaDetails, {
@@ -266,6 +295,7 @@ Rectangle {
                         mangaDetailView.resumePage = data.resume_page || 0;
                         mangaDetailView.loading = Boolean(data.loading);
                         mangaDetailView.errorMessage = data.error || "";
+                        if (data.anilist) mangaDetailView.anilistInfo = data.anilist;
                     }
                     break;
 
@@ -322,6 +352,52 @@ Rectangle {
 
                 case appRoot.evtToast:
                     appRoot.showToast(data.message || "");
+                    break;
+
+                case appRoot.evtAnilistState: {
+                    let prevConflicts = appRoot.anilistConflictCount;
+                    appRoot.anilistState = data;
+                    if ((data.conflict_count || 0) > prevConflicts) appRoot.conflictsSnoozed = false;
+                    if (data.local_changed && appRoot.activeOverlay === "detail") {
+                        // AniList progress marked chapters read: refresh the open manga from local cache
+                        appRoot.sendReq(appRoot.reqMangaDetails, {
+                            source_id: mangaDetailView.sourceId,
+                            source_name: mangaDetailView.sourceName,
+                            manga_id: mangaDetailView.mangaId,
+                            manga_title: mangaDetailView.mangaTitle,
+                            force_refresh: false
+                        });
+                    } else if (appRoot.activeOverlay === "detail" && mangaDetailView.anilistInfo.connected !== Boolean(data.connected)) {
+                        appRoot.sendReq(appRoot.reqAnilistMangaInfo, { source_id: mangaDetailView.sourceId, manga_id: mangaDetailView.mangaId });
+                    } else if (appRoot.activeOverlay === "detail" && mangaDetailView.anilistInfo.linked) {
+                        appRoot.sendReq(appRoot.reqAnilistMangaInfo, { source_id: mangaDetailView.sourceId, manga_id: mangaDetailView.mangaId });
+                    }
+                    break;
+                }
+
+                case appRoot.evtAnilistConnect:
+                    appRoot.anilistConnect = data;
+                    break;
+
+                case appRoot.evtAnilistSearch:
+                    if (data.source_id === mangaDetailView.sourceId && data.manga_id === mangaDetailView.mangaId) {
+                        appRoot.alSearchResults = data.results || [];
+                        appRoot.alSearchError = data.error || "";
+                        appRoot.alSearching = false;
+                    }
+                    break;
+
+                case appRoot.evtMangaAnilist:
+                    if (data.source_id === mangaDetailView.sourceId && data.manga_id === mangaDetailView.mangaId) {
+                        mangaDetailView.anilistInfo = data.anilist || ({});
+                    }
+                    break;
+
+                case appRoot.evtAnilistSources:
+                    appRoot.alSourceResults = data.results || [];
+                    appRoot.alSourcesError = data.error || "";
+                    appRoot.alSourcesLoading = false;
+                    if (data.sources) appRoot.alSourceFilter = data.sources;
                     break;
             }
         }
@@ -611,6 +687,62 @@ Rectangle {
                 appRoot.sendReq(appRoot.reqDeleteDownload, { clear_cache: true });
             }
         }
+
+        AniListView {
+            id: anilistView
+            anchors.fill: parent
+            visible: appRoot.activeTab === "anilist"
+            alState: appRoot.anilistState
+            connectInfo: appRoot.anilistConnect
+            sourceResults: appRoot.alSourceResults
+            sourcesLoading: appRoot.alSourcesLoading
+            sourcesError: appRoot.alSourcesError
+            installedSources: appRoot.installedSources
+            sourceFilterSel: appRoot.alSourceFilter
+
+            onVisibleChanged: {
+                if (!visible && appRoot.anilistConnect && appRoot.anilistConnect.running) {
+                    appRoot.sendReq(appRoot.reqAnilistConnect, { start: false });
+                }
+            }
+            onRequestConnect: (start) => appRoot.sendReq(appRoot.reqAnilistConnect, { start: start })
+            onRequestSync: () => appRoot.sendReq(appRoot.reqAnilistSync, {})
+            onRequestLogout: () => appRoot.sendReq(appRoot.reqAnilistLogout, {})
+            onShowConflicts: () => { appRoot.conflictsSnoozed = false; }
+            onOpenLinked: (e) => {
+                appRoot.navigateToManga({
+                    source_id: e.link.source_id,
+                    source_name: e.link.source_name,
+                    manga_id: e.link.manga_id,
+                    title: e.link.title || e.title
+                });
+            }
+            onRequestFindSources: (e, sources, probe) => {
+                appRoot.alSourceResults = [];
+                appRoot.alSourcesError = "";
+                appRoot.alSourcesLoading = true;
+                appRoot.alSourceFilter = sources || [];
+                appRoot.sendReq(appRoot.reqAnilistFindSources, {
+                    media_id: e.media_id,
+                    titles: [e.title_english || "", e.title_romaji || "", e.title || ""],
+                    sources: sources || [],
+                    probe: probe === undefined ? true : Boolean(probe)
+                });
+            }
+            onLinkAndOpen: (e, r) => {
+                appRoot.sendReq(appRoot.reqAnilistLink, {
+                    source_id: r.source_id,
+                    source_name: r.source_name,
+                    manga_id: r.id,
+                    manga_title: r.title,
+                    cover_url: r.cover_url || "",
+                    author: r.author || "",
+                    description: r.description || "",
+                    media: { media_id: e.media_id, title: e.title, chapters: e.chapters || 0 }
+                });
+                appRoot.navigateToManga(r);
+            }
+        }
     }
 
     // 3. Manga Detail Full View Overlay
@@ -664,6 +796,22 @@ Rectangle {
         onDownloadChaptersRequested: (items) => {
             appRoot.sendReq(appRoot.reqDownloadChapters, { items: items });
         }
+        onAnilistRequested: () => {
+            appRoot.alSearchResults = [];
+            appRoot.alSearchError = "";
+            appRoot.alSearching = !(mangaDetailView.anilistInfo && mangaDetailView.anilistInfo.linked);
+            anilistDialog.open();
+        }
+        onSearchElsewhereRequested: () => {
+            let al = mangaDetailView.anilistInfo;
+            let q = mangaDetailView.mangaTitle;
+            let slug = /^\d+--(.+)$/.exec(mangaDetailView.mangaId || "");  // MangaLib-style "247--shingeki-no-kyojin"
+            if (al && al.linked && al.title) q = al.title;
+            else if (slug && !/[A-Za-z]/.test(q)) q = slug[1].replace(/[-_]+/g, " ").trim();
+            appRoot.activeOverlay = "none";
+            appRoot.activeTab = "browse";
+            browseView.searchFor(q);
+        }
         onToggleChapterReadRequested: (ch, markRead) => {
             // Optimistically update UI chapter row immediately
             let list = mangaDetailView.chapters.slice();
@@ -681,6 +829,65 @@ Rectangle {
                 read: markRead
             });
         }
+    }
+
+    // 3b. AniList sheet for the open manga
+    AniListMangaDialog {
+        id: anilistDialog
+        anchors.fill: parent
+        z: 22
+        info: mangaDetailView.anilistInfo
+        mangaTitle: mangaDetailView.mangaTitle
+        results: appRoot.alSearchResults
+        searching: appRoot.alSearching
+        searchError: appRoot.alSearchError
+        visible: anilistDialog.active && appRoot.activeOverlay === "detail"
+
+        onSearchRequested: (q) => {
+            appRoot.alSearching = true;
+            appRoot.alSearchError = "";
+            appRoot.sendReq(appRoot.reqAnilistSearch, {
+                source_id: mangaDetailView.sourceId,
+                manga_id: mangaDetailView.mangaId,
+                query: q
+            });
+        }
+        onLinkRequested: (media) => {
+            appRoot.sendReq(appRoot.reqAnilistLink, {
+                source_id: mangaDetailView.sourceId,
+                manga_id: mangaDetailView.mangaId,
+                media: media
+            });
+        }
+        onUnlinkRequested: () => {
+            appRoot.sendReq(appRoot.reqAnilistLink, {
+                source_id: mangaDetailView.sourceId,
+                manga_id: mangaDetailView.mangaId,
+                media: null
+            });
+            anilistDialog.close();
+        }
+        onUpdateRequested: (progress, status) => {
+            appRoot.sendReq(appRoot.reqAnilistUpdate, {
+                media_id: mangaDetailView.anilistInfo.media_id,
+                progress: progress,
+                status: status,
+                source_id: mangaDetailView.sourceId,
+                manga_id: mangaDetailView.mangaId
+            });
+            appRoot.showToast("Saved, syncing to AniList");
+            anilistDialog.close();
+        }
+    }
+
+    // 3c. "Which progress is right?" prompt (never shown over the reader)
+    AniListConflictDialog {
+        anchors.fill: parent
+        z: 70
+        active: !appRoot.conflictsSnoozed && appRoot.activeOverlay !== "reader"
+        conflicts: (appRoot.anilistState && appRoot.anilistState.conflicts) ? appRoot.anilistState.conflicts : []
+        onResolve: (mediaId, choice) => appRoot.sendReq(appRoot.reqAnilistResolve, { media_id: mediaId, choice: choice })
+        onLater: () => { appRoot.conflictsSnoozed = true; }
     }
 
     // 4. Fullscreen Reader Overlay (1404 x 1872 full-bleed)
@@ -781,12 +988,13 @@ Rectangle {
                     { id: "library", label: "Library", icon: "▣" },
                     { id: "recent", label: "Recent", icon: "◷" },
                     { id: "browse", label: "Browse", icon: "⌕" },
-                    { id: "downloads", label: "Downloads", icon: "⬇" }
+                    { id: "downloads", label: "Downloads", icon: "⬇" },
+                    { id: "anilist", label: "AniList", icon: "◉" }
                 ]
                 delegate: Rectangle {
                     id: navTabBtn
                     readonly property bool selected: appRoot.activeTab === modelData.id && appRoot.activeOverlay === "none"
-                    width: appRoot.width / 4
+                    width: appRoot.width / 5
                     height: parent.height
                     color: (navTabBtn.selected || navTabArea.pressed) ? "#000000" : "#FFFFFF"
 
@@ -815,6 +1023,9 @@ Rectangle {
                                 if (modelData.id === "downloads" && appRoot.downloadQueue && appRoot.downloadQueue.length > 0) {
                                     return modelData.label + " (" + appRoot.downloadQueue.length + ")";
                                 }
+                                if (modelData.id === "anilist" && appRoot.anilistConflictCount > 0) {
+                                    return modelData.label + " ⚠";
+                                }
                                 return modelData.label;
                             }
                             font.pixelSize: 24
@@ -831,6 +1042,9 @@ Rectangle {
                             appRoot.activeTab = modelData.id;
                             if (modelData.id === "browse") {
                                 browseView.ensureInitialCatalog();
+                            }
+                            if (modelData.id === "anilist") {
+                                appRoot.sendReq(appRoot.reqAnilistState, {});
                             }
                         }
                     }

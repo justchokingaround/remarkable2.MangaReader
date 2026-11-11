@@ -8,5 +8,8 @@
         <file>ui/MangaDetailView.qml</file>
         <file>ui/ReaderView.qml</file>
         <file>ui/TouchKeyboard.qml</file>
+        <file>ui/AniListView.qml</file>
+        <file>ui/AniListMangaDialog.qml</file>
+        <file>ui/AniListConflictDialog.qml</file>
     </qresource>
 </RCC>
