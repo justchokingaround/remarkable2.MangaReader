@@ -38,6 +38,7 @@ Rectangle {
     readonly property int reqAnilistResolve: 27
     readonly property int reqAnilistFindSources: 28
     readonly property int reqAnilistMangaInfo: 29
+    readonly property int reqOpenLink: 30
 
     readonly property int evtBootstrap: 100
     readonly property int evtLibraryUpdated: 101
@@ -54,6 +55,7 @@ Rectangle {
     readonly property int evtAnilistSearch: 122
     readonly property int evtMangaAnilist: 123
     readonly property int evtAnilistSources: 124
+    readonly property int evtOpenLink: 125
 
     // Global state
     property bool bootstrapped: false
@@ -393,6 +395,28 @@ Rectangle {
                     }
                     break;
 
+                case appRoot.evtOpenLink:
+                    browseView.openLinkLoading = false;
+                    if (data.ok) {
+                        browseView.openLinkMode = false;
+                        browseView.openLinkText = "";
+                        let n = data.chapter_count || 0;
+                        appRoot.showToast(n > 0 ? ("Opened · " + n + " chapters") : "Opened, but this entry has no chapters");
+                        appRoot.navigateToManga({
+                            source_id: data.source_id,
+                            source_name: data.source_name,
+                            id: data.manga_id,
+                            manga_id: data.manga_id,
+                            title: data.title,
+                            cover_url: data.cover_url || "",
+                            author: data.author || "",
+                            description: data.description || ""
+                        });
+                    } else {
+                        browseView.openLinkError = data.error || "Could not open that link";
+                    }
+                    break;
+
                 case appRoot.evtAnilistSources:
                     appRoot.alSourceResults = data.results || [];
                     appRoot.alSourcesError = data.error || "";
@@ -651,6 +675,9 @@ Rectangle {
                 appRoot.sourcesLoading = true;
                 appRoot.sourcesError = "";
                 appRoot.sendReq(appRoot.reqInstallSource, { source_id: sid, install: install });
+            }
+            onRequestOpenLink: (text) => {
+                appRoot.sendReq(appRoot.reqOpenLink, { text: text });
             }
             onRequestSaveSourceConfig: (cfgPayload) => {
                 appRoot.sourcesLoading = true;

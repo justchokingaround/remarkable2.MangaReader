@@ -58,6 +58,7 @@ constexpr int32_t REQ_ANILIST_UPDATE = 26;
 constexpr int32_t REQ_ANILIST_RESOLVE = 27;
 constexpr int32_t REQ_ANILIST_FIND_SOURCES = 28;
 constexpr int32_t REQ_ANILIST_MANGA_INFO = 29;
+constexpr int32_t REQ_OPEN_LINK = 30;
 
 // Backend -> Frontend event message types
 constexpr int32_t EVT_BOOTSTRAP = 100;
@@ -75,6 +76,7 @@ constexpr int32_t EVT_ANILIST_CONNECT = 121;
 constexpr int32_t EVT_ANILIST_SEARCH = 122;
 constexpr int32_t EVT_MANGA_ANILIST = 123;
 constexpr int32_t EVT_ANILIST_SOURCES = 124;
+constexpr int32_t EVT_OPEN_LINK = 125;
 
 struct DownloadTask {
     std::string key;
@@ -640,6 +642,152 @@ private:
             default:
                 break;
         }
+    }
+
+    // "Open a link": many sources hide entries from search (MangaLib licensed/removed titles,
+    // age restricted ones, ...) while the entry itself may still be reachable. Accepts a full
+    // URL, a "<id>--<slug>" key, a bare slug, or a MangaDex UUID.
+    Json::Value resolveLink(const std::string& rawText, std::string* errOut) {
+        Json::Value out = Json::Value::object();
+        std::string text = util::trim(rawText);
+        if (text.empty()) {
+            if (errOut) *errOut = "Nothing to open";
+            return out;
+        }
+
+        // MangaDex UUID (bare or in a mangadex.org URL)
+        std::string uuid;
+        for (size_t i = 0; i + 36 <= text.size(); ++i) {
+            bool okUuid = true;
+            for (size_t k = 0; k < 36 && okUuid; ++k) {
+                char c = text[i + k];
+                if (k == 8 || k == 13 || k == 18 || k == 23) okUuid = (c == '-');
+                else okUuid = std::isxdigit(static_cast<unsigned char>(c)) != 0;
+            }
+            if (okUuid) { uuid = text.substr(i, 36); break; }
+        }
+
+        // Host + path segments
+        std::string host, path;
+        size_t scheme = text.find("://");
+        std::string rest = scheme == std::string::npos ? text : text.substr(scheme + 3);
+        size_t slash = rest.find('/');
+        if (slash == std::string::npos) { host = rest; }
+        else { host = rest.substr(0, slash); path = rest.substr(slash); }
+        if (host.empty()) path = text;
+        size_t q = path.find_first_of("?#");
+        if (q != std::string::npos) path.resize(q);
+        std::vector<std::string> segs;
+        {
+            std::string cur;
+            for (char c : path) {
+                if (c == '/') { if (!cur.empty()) { segs.push_back(cur); cur.clear(); } }
+                else cur.push_back(c);
+            }
+            if (!cur.empty()) segs.push_back(cur);
+        }
+        // Skip locales like /ru/ and /en/
+        static const std::set<std::string> kLocales = {"ru", "en", "ja", "uk", "multi"};
+        std::vector<std::string> keys;
+        auto pushKey = [&](const std::string& k) {
+            if (k.empty() || kLocales.count(k)) return;
+            for (const auto& e : keys) if (e == k) return;
+            keys.push_back(k);
+        };
+        for (size_t i = 0; i < segs.size(); ++i) {
+            if ((segs[i] == "read" || segs[i] == "chapter" || segs[i] == "chapters") && i > 0) pushKey(segs[i - 1]);
+            if (segs[i] == "manga" || segs[i] == "series" || segs[i] == "comic") {
+                if (i + 1 < segs.size()) pushKey(segs[i + 1]);
+            }
+        }
+        for (auto it = segs.rbegin(); it != segs.rend(); ++it) pushKey(*it);
+        if (keys.empty() && !text.empty() && text.find('/') == std::string::npos) pushKey(text);
+
+        // Likely source for this host
+        static const std::vector<std::pair<std::string, std::string>> kHosts = {
+            {"mangalib", "v2.ru.mangalib"}, {"cdnlibs", "v2.ru.mangalib"}, {"imglib", "v2.ru.mangalib"},
+            {"hentaicdn", "v2.ru.mangalib"}, {"remanga", "v2.ru.remanga"}, {"mangadex", "mangadex"},
+            {"weebcentral", "v2.en.weebcentral"}, {"mangafire", "v2.multi.mangafire"},
+        };
+        std::vector<std::string> trySources;
+        for (const auto& [needle, sid] : kHosts) {
+            if (host.find(needle) != std::string::npos) { trySources.push_back(sid); break; }
+        }
+        auto installed = buildInstalledSourcesList(nullptr);
+        for (const auto& s : installed.asArray()) {
+            std::string sid = s["id"].str();
+            if (sid == "mangadex" || !aidokurun::isV2Source(sid)) continue;
+            if (std::find(trySources.begin(), trySources.end(), sid) == trySources.end()) trySources.push_back(sid);
+        }
+        if (uuid.empty() && std::find(trySources.begin(), trySources.end(), std::string("mangadex")) == trySources.end()) {
+            trySources.push_back("mangadex");
+        }
+
+        auto sourceName = [&](const std::string& sid) {
+            for (const auto& s : installed.asArray()) if (s["id"].str() == sid) return s["name"].str(sid);
+            return sid;
+        };
+
+        // MangaDex first when we have a UUID
+        if (!uuid.empty()) {
+            std::string e, chErr;
+            Json::Value details = mangadex_.getMangaDetails(uuid, &e);
+            int n = static_cast<int>(mangadex_.getChapters(uuid, &chErr).size());
+            if (details.isObject() && (n > 0 || chErr.empty())) {
+                out["source_id"] = "mangadex";
+                out["source_name"] = "MangaDex";
+                out["manga_id"] = uuid;
+                out["title"] = details["title"].str(uuid);
+                out["cover_url"] = details["cover_url"].str();
+                out["author"] = details["author"].str();
+                out["description"] = details["description"].str();
+                out["chapter_count"] = n > 0 ? n : -1;  // unknown beats a wrong "0 chapters"
+                return out;
+            }
+        }
+
+        int attempts = 0;
+        std::string firstErr;
+        for (const auto& sid : trySources) {
+            if (!aidokurun::isV2Source(sid) || !arun_.available()) continue;
+            for (const auto& key : keys) {
+                if (++attempts > 6) break;  // keep it snappy: each attempt loads the source's wasm
+                std::string err;
+                Json::Value res = arun_.getManga(sid, key, aidoku_.languages(), &err);
+                const Json::Value& chs = res["chapters"];
+                if (!chs.isArray()) { if (firstErr.empty()) firstErr = err; continue; }
+                std::string title = res["manga"]["title"].str();
+                if (title.empty() || title == key) {
+                    title.clear();
+                    std::string pretty = key;
+                    size_t dd = pretty.find("--");
+                    if (dd != std::string::npos) pretty = pretty.substr(dd + 2);
+                    for (char& c : pretty) if (c == '-' || c == '_') c = ' ';
+                    if (!pretty.empty()) pretty[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(pretty[0])));
+                    title = util::trim(pretty);
+                }
+                out["source_id"] = sid;
+                out["source_name"] = sourceName(sid);
+                out["manga_id"] = key;
+                out["title"] = title;
+                out["cover_url"] = res["manga"]["cover_url"].str();
+                out["author"] = res["manga"]["author"].str();
+                out["description"] = res["manga"]["description"].str();
+                out["chapter_count"] = static_cast<int>(chs.size());
+                return out;
+            }
+        }
+        if (errOut) {
+            std::string msg = firstErr.empty() ? std::string() : firstErr;
+            // Source errors are often raw upstream junk (HTML blocks, JSON parse noise)
+            if (msg.empty() || msg.find('<') != std::string::npos ||
+                msg.find("JSON error") != std::string::npos || msg.find("HTTP") != std::string::npos) {
+                msg = "Could not open that link - the manga may be removed or the source is rate limited";
+            }
+            if (msg.size() > 200) msg = msg.substr(0, 200);
+            *errOut = msg;
+        }
+        return out;
     }
 
     void sendToast(const std::string& message, bool isError = false) {
@@ -1937,6 +2085,20 @@ private:
                 ev["source_config"] = aidoku_.getSourceConfig();
                 ev["aidoku_online"] = online;
                 ipc_.sendJson(EVT_BOOTSTRAP, ev);
+                break;
+            }
+            case REQ_OPEN_LINK: {
+                std::string text = req["text"].str();
+                spawnAsync([this, text]() {
+                    std::string err;
+                    Json::Value res = resolveLink(text, &err);
+                    Json::Value ev = Json::Value::object();
+                    ev["text"] = text;
+                    ev["ok"] = res.isObject() && !res["source_id"].str().empty();
+                    for (const auto& kv : res.asObject()) ev[kv.first] = kv.second;
+                    ev["error"] = ev["ok"].boolean(false) ? std::string() : (err.empty() ? "Not found" : err);
+                    ipc_.sendJson(EVT_OPEN_LINK, ev);
+                });
                 break;
             }
             case REQ_SAVE_SOURCE_CONFIG: {

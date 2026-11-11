@@ -32,6 +32,10 @@ Item {
     property string newUrlText: ""
     property string catalogFilterText: ""
     property bool initialCatalogLoaded: false
+    property bool openLinkMode: false
+    property string openLinkText: ""
+    property bool openLinkLoading: false
+    property string openLinkError: ""
 
     readonly property var commonLanguageCodes: [
         "en", "multi", "ja", "zh", "ko", "es", "fr", "pt", "de", "it", "ru", "id", "vi"
@@ -43,6 +47,7 @@ Item {
     signal requestSourcesList()
     signal requestInstallSource(string sourceId, bool install)
     signal requestSaveSourceConfig(var configPayload)
+    signal requestOpenLink(string text)
 
     function formatDraftJson(lists, langs) {
         let cleanLists = lists ? lists.slice() : [];
@@ -189,6 +194,16 @@ Item {
         requestSearch(text, "all", "search", false);
     }
 
+    function submitOpenLink() {
+        let t = browseRoot.openLinkText.trim();
+        if (t.length === 0) return;
+        browseRoot.keyboardOpen = false;
+        openLinkInput.focus = false;
+        browseRoot.openLinkLoading = true;
+        browseRoot.openLinkError = "";
+        browseRoot.requestOpenLink(t);
+    }
+
     function browseSpecificSource(sid) {
         keyboardOpen = false;
         extensionsModalOpen = false;
@@ -215,7 +230,7 @@ Item {
 
             Rectangle {
                 id: searchBox
-                width: parent.width - 220 - 180 - 24
+                width: parent.width - 220 - 180 - 110 - 36
                 height: 74
                 color: "#FFFFFF"
                 border.width: (browseRoot.keyboardOpen && browseRoot.activeInputTarget === "search") ? 3 : 2
@@ -351,6 +366,111 @@ Item {
                     anchors.fill: parent
                     onClicked: (mouse) => browseRoot.openSourcesModal("")
                 }
+            }
+
+            // Open a manga straight from a link / id (for entries a source hides from search)
+            Rectangle {
+                width: 110
+                height: 74
+                color: linkBtnArea.pressed ? "#000000" : "#FFFFFF"
+                border.width: 2
+                border.color: "#000000"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "↪ Link"
+                    font.pixelSize: 21
+                    font.bold: true
+                    color: linkBtnArea.pressed ? "#FFFFFF" : "#000000"
+                }
+                MouseArea {
+                    id: linkBtnArea
+                    anchors.fill: parent
+                    onClicked: (mouse) => {
+                        browseRoot.openLinkMode = true;
+                        browseRoot.openLinkError = "";
+                        browseRoot.keyboardOpen = false;
+                    }
+                }
+            }
+        }
+
+        // 1b. Open-by-link bar
+        Column {
+            visible: browseRoot.openLinkMode
+            width: parent.width
+            spacing: 8
+
+            Row {
+                width: parent.width
+                spacing: 12
+
+                Rectangle {
+                    width: parent.width - 260 - 12
+                    height: 74
+                    border.width: (browseRoot.keyboardOpen && browseRoot.activeInputTarget === "open_link") ? 3 : 2
+                    border.color: "#000000"
+
+                    TextInput {
+                        id: openLinkInput
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        font.pixelSize: 24
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        text: browseRoot.openLinkText
+                        onTextChanged: () => {
+                            if (browseRoot.openLinkText !== openLinkInput.text) browseRoot.openLinkText = openLinkInput.text;
+                        }
+                        onAccepted: () => browseRoot.submitOpenLink()
+                    }
+                    Text {
+                        visible: browseRoot.openLinkText.length === 0
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Paste a link or id (e.g. mangalib.me/ru/manga/123--title)"
+                        font.pixelSize: 22
+                        color: "#666666"
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: (mouse) => {
+                            browseRoot.activeInputTarget = "open_link";
+                            openLinkInput.forceActiveFocus();
+                            browseRoot.keyboardOpen = true;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 260
+                    height: 74
+                    color: openArea.pressed ? "#FFFFFF" : "#000000"
+                    border.width: 2
+                    border.color: "#000000"
+                    Text {
+                        anchors.centerIn: parent
+                        text: browseRoot.openLinkLoading ? "Opening..." : "Open  →"
+                        font.pixelSize: 23
+                        font.bold: true
+                        color: openArea.pressed ? "#000000" : "#FFFFFF"
+                    }
+                    MouseArea {
+                        id: openArea
+                        anchors.fill: parent
+                        onClicked: (mouse) => browseRoot.submitOpenLink()
+                    }
+                }
+            }
+
+            Text {
+                visible: browseRoot.openLinkError.length > 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: "⚠ " + browseRoot.openLinkError
+                font.pixelSize: 21
+                font.bold: true
             }
         }
 
@@ -1755,11 +1875,13 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         active: browseRoot.keyboardOpen
-        urlMode: browseRoot.activeInputTarget === "new_url" || browseRoot.activeInputTarget === "raw_json"
+        urlMode: browseRoot.activeInputTarget === "new_url" || browseRoot.activeInputTarget === "raw_json" ||
+                 browseRoot.activeInputTarget === "open_link"
         submitLabel: {
             if (browseRoot.activeInputTarget === "new_url") return "Add URL ↵";
             if (browseRoot.activeInputTarget === "raw_json") return "Save JSON ↵";
             if (browseRoot.activeInputTarget === "src_filter") return "Done ↵";
+            if (browseRoot.activeInputTarget === "open_link") return "Open ↵";
             return "Search ↵";
         }
         z: 80
@@ -1771,6 +1893,8 @@ Item {
                 rawJsonEdit.insert(rawJsonEdit.cursorPosition, txt);
             } else if (browseRoot.activeInputTarget === "src_filter") {
                 filterSrcInput.insert(filterSrcInput.cursorPosition, txt);
+            } else if (browseRoot.activeInputTarget === "open_link") {
+                openLinkInput.insert(openLinkInput.cursorPosition, txt);
             } else {
                 searchInput.insert(searchInput.cursorPosition, txt);
             }
@@ -1788,6 +1912,10 @@ Item {
                 if (filterSrcInput.cursorPosition > 0) {
                     filterSrcInput.remove(filterSrcInput.cursorPosition - 1, filterSrcInput.cursorPosition);
                 }
+            } else if (browseRoot.activeInputTarget === "open_link") {
+                if (openLinkInput.cursorPosition > 0) {
+                    openLinkInput.remove(openLinkInput.cursorPosition - 1, openLinkInput.cursorPosition);
+                }
             } else {
                 if (searchInput.cursorPosition > 0) {
                     searchInput.remove(searchInput.cursorPosition - 1, searchInput.cursorPosition);
@@ -1795,7 +1923,10 @@ Item {
             }
         }
         onClearAll: () => {
-            if (browseRoot.activeInputTarget === "new_url") {
+            if (browseRoot.activeInputTarget === "open_link") {
+                browseRoot.openLinkText = "";
+                openLinkInput.text = "";
+            } else if (browseRoot.activeInputTarget === "new_url") {
                 browseRoot.newUrlText = "";
                 newUrlInput.text = "";
             } else if (browseRoot.activeInputTarget === "raw_json") {
@@ -1817,6 +1948,8 @@ Item {
                 browseRoot.saveSourceConfigAction();
             } else if (browseRoot.activeInputTarget === "src_filter") {
                 browseRoot.keyboardOpen = false;
+            } else if (browseRoot.activeInputTarget === "open_link") {
+                browseRoot.submitOpenLink();
             } else {
                 browseRoot.submitSearch();
             }
@@ -1827,6 +1960,7 @@ Item {
             newUrlInput.focus = false;
             rawJsonEdit.focus = false;
             filterSrcInput.focus = false;
+            openLinkInput.focus = false;
         }
     }
 }
