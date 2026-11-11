@@ -177,6 +177,18 @@ Item {
         modalTab = "catalog";
     }
 
+    // Search all installed sources for a title (e.g. "Search other sources" from a manga page)
+    function searchFor(text) {
+        keyboardOpen = false;
+        extensionsModalOpen = false;
+        sourceFilter = "all";
+        queryText = text;
+        searchInput.text = text;
+        browseMode = "search";
+        initialCatalogLoaded = true;
+        requestSearch(text, "all", "search", false);
+    }
+
     function browseSpecificSource(sid) {
         keyboardOpen = false;
         extensionsModalOpen = false;

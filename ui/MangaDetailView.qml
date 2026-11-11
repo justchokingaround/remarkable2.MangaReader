@@ -19,6 +19,7 @@ Rectangle {
     property int resumePage: 0
     property bool loading: false
     property string errorMessage: ""
+    property var anilistInfo: ({})
 
     property bool sortDescending: true
     property string chapterFilter: "all" // "all" | "unread" | "downloaded"
@@ -29,6 +30,8 @@ Rectangle {
     signal openChapterRequested(var chapterObj)
     signal downloadChaptersRequested(var chapterList)
     signal toggleChapterReadRequested(var chapterObj, bool markRead)
+    signal anilistRequested()
+    signal searchElsewhereRequested()
 
     readonly property var chronologicalChapters: {
         if (!chapters || chapters.length === 0) return [];
@@ -398,6 +401,45 @@ Rectangle {
                         }
                     }
                 }
+
+                Rectangle {
+                    id: alBtn
+                    readonly property var al: detailRoot.anilistInfo || ({})
+                    visible: Boolean(al.connected)
+                    width: 320
+                    height: 72
+                    color: alBtnArea.pressed ? "#000000" : "#FFFFFF"
+                    border.width: al.linked ? 2 : 3
+                    border.color: "#000000"
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 2
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: alBtn.al.linked
+                                  ? ("AniList · Ch. " + (alBtn.al.progress || 0) +
+                                     (alBtn.al.chapters > 0 ? "/" + alBtn.al.chapters : "") +
+                                     (alBtn.al.conflict ? "  ⚠" : (alBtn.al.pending ? "  ⟳" : "")))
+                                  : "Link AniList…"
+                            font.pixelSize: 21
+                            font.bold: true
+                            color: alBtnArea.pressed ? "#FFFFFF" : "#000000"
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: alBtn.al.linked ? (alBtn.al.status_label || "")
+                                                          : (alBtn.al.unsure ? "pick the right entry" : "track your progress")
+                            font.pixelSize: 17
+                            color: alBtnArea.pressed ? "#FFFFFF" : "#555555"
+                        }
+                    }
+                    MouseArea {
+                        id: alBtnArea
+                        anchors.fill: parent
+                        onClicked: (mouse) => detailRoot.anilistRequested()
+                    }
+                }
             }
         }
 
@@ -507,24 +549,54 @@ Rectangle {
     }
 
     Rectangle {
-        visible: !detailRoot.loading && detailRoot.errorMessage.length > 0 && detailRoot.displayedChapters.length === 0
+        visible: !detailRoot.loading && detailRoot.displayedChapters.length === 0 &&
+                 (detailRoot.errorMessage.length > 0 || detailRoot.chapterFilter === "all")
         anchors.top: headerBlock.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: 24
-        height: 180
+        height: emptyCol.height + 56
         color: "#F8F8F8"
         border.width: 2
         border.color: "#000000"
 
-        Text {
+        Column {
+            id: emptyCol
             anchors.centerIn: parent
             width: parent.width - 48
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-            text: "Could not load chapters: " + detailRoot.errorMessage
-            font.pixelSize: 22
-            color: "#000000"
+            spacing: 22
+
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: detailRoot.errorMessage.length > 0
+                      ? "Could not load chapters: " + detailRoot.errorMessage
+                      : "This source has no chapters for this title."
+                font.pixelSize: 22
+                color: "#000000"
+            }
+
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 400
+                height: 72
+                color: elsewhereArea.pressed ? "#FFFFFF" : "#000000"
+                border.width: 2
+                border.color: "#000000"
+                Text {
+                    anchors.centerIn: parent
+                    text: "⌕ Search other sources"
+                    font.pixelSize: 23
+                    font.bold: true
+                    color: elsewhereArea.pressed ? "#000000" : "#FFFFFF"
+                }
+                MouseArea {
+                    id: elsewhereArea
+                    anchors.fill: parent
+                    onClicked: (mouse) => detailRoot.searchElsewhereRequested()
+                }
+            }
         }
     }
 

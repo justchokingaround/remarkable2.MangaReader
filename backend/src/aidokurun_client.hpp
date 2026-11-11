@@ -618,9 +618,13 @@ public:
         Json::Value all = Json::Value::array();
         Json::Value filtered = Json::Value::array();
         std::set<std::string> chapterLangs;
+        size_t lockedCount = 0;
         if (res["Chapters"].isArray()) {
             for (const auto& c : res["Chapters"].asArray()) {
-                if (!c["Locked"].isNull() && c["Locked"].boolean(false)) continue;
+                if (!c["Locked"].isNull() && c["Locked"].boolean(false)) {
+                    ++lockedCount;
+                    continue;
+                }
                 Json::Value ch = Json::Value::object();
                 ch["id"] = c["Key"].str();
                 if (ch["id"].str().empty()) continue;
@@ -647,6 +651,14 @@ public:
                 if (lang.empty() || wanted.empty() || wanted.count(lang)) filtered.push(ch);
             }
         }
+        // An empty list with no error otherwise just shows "No Chapters" in the UI, which looks
+        // like the app is broken. Explain it instead (e.g. MangaLib hides licensed / restricted
+        // titles from logged-out users, and aidoku-run has no web login support).
+        if (all.empty() && errOut && errOut->empty()) {
+            *errOut = lockedCount > 0
+                ? "All " + std::to_string(lockedCount) + " chapters are locked (paid or login required)"
+                : "Source returned no chapters. The title may be licensed, removed, or need a site login (not supported)";
+        }
         Json::Value& chosen = filtered.empty() ? all : filtered;
         // Tag scanlator with language when several languages are shown (e.g. MangaDex en+ru)
         std::set<std::string> shownLangs;
@@ -664,6 +676,24 @@ public:
         }
         out["chapters"] = chosen;
         return out;
+    }
+
+    // Number of readable (unlocked) chapters, or -1 when the source could not be asked.
+    // Used to warn about entries whose chapters are hidden (licensed / login required).
+    int chapterCount(const std::string& sid, const std::string& mangaId, std::string* errOut = nullptr) {
+        std::string path = pathForSid(sid);
+        if (path.empty()) {
+            if (errOut) *errOut = "Source not installed";
+            return -1;
+        }
+        Json::Value res = runJson({path, "manga", mangaId}, 60, errOut);
+        if (!res.isObject() || !res["Chapters"].isArray()) return -1;
+        int n = 0;
+        for (const auto& c : res["Chapters"].asArray()) {
+            if (!c["Locked"].isNull() && c["Locked"].boolean(false)) continue;
+            ++n;
+        }
+        return n;
     }
 
     // Downloads a chapter to a CBZ under downloads/. Returns the CBZ path or "".
